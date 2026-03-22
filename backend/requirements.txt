@@ -1,0 +1,10 @@
+# FastAPI Backend dependencies
+fastapi
+uvicorn
+asyncpg
+boto3
+PyJWT[crypto]
+upstash-redis
+pydantic
+python-multipart
+httpx
