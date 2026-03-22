@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import { FileUploader } from '@/components/analyze/FileUploader';
@@ -12,7 +12,7 @@ import UserMenu from '@/components/auth/UserMenu';
 
 type PageState = 'idle' | 'uploading' | 'analyzing' | 'complete';
 
-export default function AnalyzePage() {
+function AnalyzeContent() {
     const searchParams = useSearchParams();
     const initialRunId = searchParams.get('run_id');
 
@@ -242,5 +242,19 @@ export default function AnalyzePage() {
                 </main>
             </div>
         </ProtectedRoute>
+    );
+}
+
+export default function AnalyzePage() {
+    return (
+        <Suspense fallback={
+            <div className="min-h-svh bg-brand-black flex items-center justify-center">
+                <div className="w-6 h-6 border border-brand-red bg-brand-black flex items-center justify-center rounded-luxury animate-pulse">
+                    <div className="w-2 h-2 bg-brand-red rounded-sm" />
+                </div>
+            </div>
+        }>
+            <AnalyzeContent />
+        </Suspense>
     );
 }
