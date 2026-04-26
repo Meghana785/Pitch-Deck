@@ -12,16 +12,15 @@ import json
 import logging
 import time
 
-import anthropic
+import google.generativeai as genai
+import os
 
 from pipeline.state import PipelineState
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-sonnet-4-5"
-_MAX_TOKENS = 1500
-_RETRIES = 2
-_BACKOFF_S = 2
+_MODEL_NAME = "gemini-flash-latest"
+_MAX_TOKENS = 2048
 
 _SYSTEM_PROMPT = """\
 You are a critical analyst reviewing startup pitches.
@@ -36,40 +35,31 @@ Identify at least 5 and no more than 12 assumptions.\
 
 async def run_assumption_mapper(state: PipelineState) -> PipelineState:
     """
-    Agent 2: Map unproven / risky assumptions from the structured pitch.
-
-    Updates state['assumptions'] with a parsed list.
-    Records token usage in state['token_counts']['agent_2'] and
-    latency in state['latencies_ms']['agent_2'].
+    Agent 2: Map unproven / risky assumptions from the structured pitch using Gemini.
     """
-    client = anthropic.AsyncAnthropic()
+    genai.configure(api_key=os.environ["GEMINI_API"])
+    model = genai.GenerativeModel(
+        model_name=_MODEL_NAME,
+        system_instruction=_SYSTEM_PROMPT
+    )
+    
     user_content = json.dumps(state["structured"], ensure_ascii=False)
     start = time.perf_counter()
 
-    response = None
-    last_exc: Exception | None = None
-
-    for attempt in range(_RETRIES + 1):
-        try:
-            response = await client.messages.create(
-                model=_MODEL,
-                max_tokens=_MAX_TOKENS,
-                system=_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_content}],
+    try:
+        response = await model.generate_content_async(
+            user_content,
+            generation_config=genai.GenerationConfig(
+                max_output_tokens=_MAX_TOKENS,
+                response_mime_type="application/json",
             )
-            break
-        except anthropic.APIStatusError as exc:
-            last_exc = exc
-            logger.warning("assumption_mapper attempt %d failed: %s", attempt + 1, exc)
-            if attempt < _RETRIES:
-                await asyncio.sleep(_BACKOFF_S)
-    else:
-        raise RuntimeError(
-            f"[assumption_mapper] API failed after {_RETRIES + 1} attempts: {last_exc}"
         )
+    except Exception as exc:
+        logger.error("[assumption_mapper] Gemini API failed: %s", exc)
+        raise RuntimeError(f"[assumption_mapper] Gemini API failed: {exc}")
 
     elapsed_ms = int((time.perf_counter() - start) * 1000)
-    raw_content = response.content[0].text
+    raw_content = response.text
 
     try:
         assumptions = json.loads(raw_content)
@@ -82,7 +72,10 @@ async def run_assumption_mapper(state: PipelineState) -> PipelineState:
 
     token_counts = dict(state.get("token_counts") or {})
     latencies_ms = dict(state.get("latencies_ms") or {})
-    token_counts["agent_2"] = response.usage.input_tokens + response.usage.output_tokens
+    
+    # Gemini usage metadata
+    usage = response.usage_metadata
+    token_counts["agent_2"] = usage.total_token_count
     latencies_ms["agent_2"] = elapsed_ms
 
     return {

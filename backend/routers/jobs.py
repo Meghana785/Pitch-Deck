@@ -13,7 +13,7 @@ import logging
 import uuid
 from typing import Any, AsyncGenerator
 
-import asyncpg
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -43,28 +43,25 @@ class JobStatusResponse(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _verify_ownership(pool: asyncpg.Pool, run_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, Any]:
+async def _verify_ownership(db: AsyncIOMotorDatabase, run_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, Any]:
     """
     Verify that the run exists and belongs to the authenticated user.
-    Returns the run row if valid.
-    Raises 404 if not found or not owned by user.
+    Returns the run document if valid.
     """
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT id, user_id, status, created_at, completed_at, error_message
-              FROM analysis_runs
-             WHERE id = $1
-            """,
-            run_id,
-        )
+    run_doc = await db.analysis_runs.find_one(
+        {"_id": str(run_id)},
+        {"_id": 1, "user_id": 1, "status": 1, "created_at": 1, "completed_at": 1, "error_message": 1}
+    )
 
-    if not row or row["user_id"] != user_id:
+    if not run_doc or run_doc["user_id"] != str(user_id):
         raise HTTPException(
             status_code=404, detail="Analysis run not found or access denied."
         )
 
-    return dict(row)
+    # Convert _id to id for compatibility with the rest of the router if needed,
+    # though we mainly use the keys in the dict.
+    run_doc["id"] = run_doc["_id"]
+    return run_doc
 
 
 def _format_sse(event_name: str | None, data: dict[str, Any] | str) -> str:
@@ -93,10 +90,10 @@ async def get_status(request: Request, run_id: uuid.UUID) -> Any:
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid user ID format in token")
 
-    pool: asyncpg.Pool = request.app.state.pool
+    db = request.app.state.db
 
     # Verify ownership (raises 404 if invalid)
-    row = await _verify_ownership(pool, run_id, user_uuid)
+    row = await _verify_ownership(db, run_id, user_uuid)
 
     return {
         "run_id": row["id"],
@@ -124,10 +121,10 @@ async def stream_progress(request: Request, run_id: uuid.UUID) -> StreamingRespo
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid user ID format in token")
 
-    pool: asyncpg.Pool = request.app.state.pool
+    db = request.app.state.db
 
     # Verify ownership up front
-    row = await _verify_ownership(pool, run_id, user_uuid)
+    row = await _verify_ownership(db, run_id, user_uuid)
     initial_status = row["status"]
 
     async def event_generator() -> AsyncGenerator[str, None]:
