@@ -1,10 +1,13 @@
 import { authApiHandler } from '@neondatabase/auth/next/server';
 
-const defaultHandler = authApiHandler();
+let defaultHandler: any = null;
 
-const withLogging = (method: any) => async (req: any, ctx: any) => {
+const withLogging = (methodName: 'GET' | 'POST') => async (req: any, ctx: any) => {
+    if (!defaultHandler) {
+        defaultHandler = authApiHandler();
+    }
     try {
-        const res = await method(req, ctx);
+        const res = await defaultHandler[methodName](req, ctx);
         return res;
     } catch (err) {
         console.error('Auth API Proxy Error:', err);
@@ -12,5 +15,5 @@ const withLogging = (method: any) => async (req: any, ctx: any) => {
     }
 };
 
-export const GET = withLogging(defaultHandler.GET);
-export const POST = withLogging(defaultHandler.POST);
+export const GET = withLogging('GET');
+export const POST = withLogging('POST');
