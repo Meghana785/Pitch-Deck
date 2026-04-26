@@ -12,7 +12,7 @@ import os
 import logging
 from typing import Any
 
-import asyncpg
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 logger = logging.getLogger(__name__)
@@ -76,16 +76,17 @@ async def get_stats(
 
     Includes total users, total runs by status, and total reports.
     """
-    pool: asyncpg.Pool = request.app.state.pool
+    db = request.app.state.db
 
-    async with pool.acquire() as conn:
-        total_users: int = await conn.fetchval("SELECT COUNT(*) FROM users")
-        total_reports: int = await conn.fetchval("SELECT COUNT(*) FROM reports")
-        run_rows = await conn.fetch(
-            "SELECT status, COUNT(*) AS cnt FROM analysis_runs GROUP BY status"
-        )
-
-    runs_by_status = {row["status"]: row["cnt"] for row in run_rows}
+    total_users = await db.users.count_documents({})
+    total_reports = await db.reports.count_documents({})
+    
+    # Aggregate runs by status
+    pipeline = [
+        {"$group": {"_id": "$status", "cnt": {"$sum": 1}}}
+    ]
+    run_stats = await db.analysis_runs.aggregate(pipeline).to_list(length=None)
+    runs_by_status = {stat["_id"]: stat["cnt"] for stat in run_stats}
 
     return {
         "total_users": total_users,
@@ -109,34 +110,34 @@ async def get_runs(
     - offset (default 0)
     """
     limit = min(limit, 200)
-    pool: asyncpg.Pool = request.app.state.pool
+    db = request.app.state.db
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT ar.id,
-                   ar.user_id,
-                   u.email,
-                   ar.vertical,
-                   ar.status,
-                   ar.total_ms,
-                   ar.cost_usd,
-                   ar.error_message,
-                   ar.created_at,
-                   ar.completed_at
-              FROM analysis_runs ar
-              LEFT JOIN users u ON u.id = ar.user_id
-             ORDER BY ar.created_at DESC
-             LIMIT $1 OFFSET $2
-            """,
-            limit,
-            offset,
-        )
-        total: int = await conn.fetchval("SELECT COUNT(*) FROM analysis_runs")
+    pipeline = [
+        {"$sort": {"created_at": -1}},
+        {"$skip": offset},
+        {"$limit": limit},
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "user_id",
+                "foreignField": "_id",
+                "as": "user_info"
+            }
+        },
+        {
+            "$addFields": {
+                "email": {"$arrayElemAt": ["$user_info.email", 0]},
+                "id": "$_id"
+            }
+        },
+        {"$project": {"user_info": 0}}
+    ]
+    rows = await db.analysis_runs.aggregate(pipeline).to_list(length=limit)
+    total = await db.analysis_runs.count_documents({})
 
     return {
         "total": total,
         "limit": limit,
         "offset": offset,
-        "runs": [dict(r) for r in rows],
+        "runs": rows,
     }

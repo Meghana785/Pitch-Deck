@@ -32,7 +32,7 @@ class AnalyzeRequest(BaseModel):
     """Payload for POST /analyze."""
     object_key: str = Field(
         ...,
-        description="The DigitalOcean Spaces key containing the pitch (must begin with 'uploads/')."
+        description="The Cloudflare R2 key containing the pitch (must begin with 'uploads/')."
     )
     vertical: str = Field(
         ...,
@@ -111,43 +111,33 @@ async def start_analysis(request: Request, payload: AnalyzeRequest) -> Any:
     except ValueError:
         raise HTTPException(status_code=400, detail="Could not parse run_id from object_key")
 
-    pool: asyncpg.Pool = request.app.state.pool
+    db = request.app.state.db
 
     # 5. Verify the analysis_run exists and is owned by the user
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT id FROM analysis_runs 
-             WHERE id = $1 AND user_id = $2
-            """,
-            run_uuid,
-            user_uuid,
+    run_doc = await db.analysis_runs.find_one(
+        {"_id": str(run_uuid), "user_id": str(user_uuid)},
+        {"_id": 1}
+    )
+    if not run_doc:
+        raise HTTPException(
+            status_code=404,
+            detail="Analysis run not found or does not belong to the user"
         )
-        if not row:
-            raise HTTPException(
-                status_code=404,
-                detail="Analysis run not found or does not belong to the user"
-            )
 
-        # 6. Update user usage count (runs_used) and run status transactionally
-        async with conn.transaction():
-            await conn.execute(
-                """
-                UPDATE analysis_runs 
-                   SET status = 'queued' 
-                 WHERE id = $1
-                """,
-                run_uuid
-            )
-
-            await conn.execute(
-                """
-                UPDATE users 
-                   SET runs_used = runs_used + 1 
-                 WHERE id = $1
-                """,
-                user_uuid
-            )
+    # 6. Update user usage count (runs_used) and run status
+    try:
+        # Note: We can use a transaction here if needed, but sequential updates are usually fine for this context.
+        await db.analysis_runs.update_one(
+            {"_id": str(run_uuid)},
+            {"$set": {"status": "queued"}}
+        )
+        await db.users.update_one(
+            {"_id": str(user_uuid)},
+            {"$inc": {"runs_used": 1}}
+        )
+    except Exception as exc:
+        logger.error("DB update failed for run %s: %s", run_uuid, exc)
+        raise HTTPException(status_code=500, detail="Database update failed")
 
     # 7. Build Job Payload
     job_uuid = uuid.uuid4()

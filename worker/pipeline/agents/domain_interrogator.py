@@ -15,16 +15,15 @@ import logging
 import os
 import time
 
-import anthropic
+import google.generativeai as genai
+import os
 
 from pipeline.state import PipelineState
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-sonnet-4-5"
-_MAX_TOKENS = 1500
-_RETRIES = 2
-_BACKOFF_S = 2
+_MODEL_NAME = "gemini-flash-latest"
+_MAX_TOKENS = 2048
 
 # Where vertical KB markdown files live (relative to this repo's worker dir)
 _VERTICALS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "verticals")
@@ -74,13 +73,7 @@ def _load_vertical_kb(vertical: str) -> str:
 
 async def run_domain_interrogator(state: PipelineState) -> PipelineState:
     """
-    Agent 3: Generate 8 hard domain-expert investor questions.
-
-    Loads the vertical KB from disk (with generic fallback), injects it
-    into the system prompt alongside the structured pitch and assumptions.
-    Updates state['hard_questions'] with a parsed list of 8 dicts.
-    Records token usage in state['token_counts']['agent_3'] and
-    latency in state['latencies_ms']['agent_3'].
+    Agent 3: Generate 8 hard domain-expert investor questions using Gemini.
     """
     vertical = state["vertical"]
     vertical_kb = _load_vertical_kb(vertical)
@@ -98,33 +91,28 @@ async def run_domain_interrogator(state: PipelineState) -> PipelineState:
         ensure_ascii=False,
     )
 
-    client = anthropic.AsyncAnthropic()
+    genai.configure(api_key=os.environ["GEMINI_API"])
+    model = genai.GenerativeModel(
+        model_name=_MODEL_NAME,
+        system_instruction=system_prompt
+    )
+    
     start = time.perf_counter()
 
-    response = None
-    last_exc: Exception | None = None
-
-    for attempt in range(_RETRIES + 1):
-        try:
-            response = await client.messages.create(
-                model=_MODEL,
-                max_tokens=_MAX_TOKENS,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_content}],
+    try:
+        response = await model.generate_content_async(
+            user_content,
+            generation_config=genai.GenerationConfig(
+                max_output_tokens=_MAX_TOKENS,
+                response_mime_type="application/json",
             )
-            break
-        except anthropic.APIStatusError as exc:
-            last_exc = exc
-            logger.warning("domain_interrogator attempt %d failed: %s", attempt + 1, exc)
-            if attempt < _RETRIES:
-                await asyncio.sleep(_BACKOFF_S)
-    else:
-        raise RuntimeError(
-            f"[domain_interrogator] API failed after {_RETRIES + 1} attempts: {last_exc}"
         )
+    except Exception as exc:
+        logger.error("[domain_interrogator] Gemini API failed: %s", exc)
+        raise RuntimeError(f"[domain_interrogator] Gemini API failed: {exc}")
 
     elapsed_ms = int((time.perf_counter() - start) * 1000)
-    raw_content = response.content[0].text
+    raw_content = response.text
 
     try:
         hard_questions = json.loads(raw_content)
@@ -137,7 +125,9 @@ async def run_domain_interrogator(state: PipelineState) -> PipelineState:
 
     token_counts = dict(state.get("token_counts") or {})
     latencies_ms = dict(state.get("latencies_ms") or {})
-    token_counts["agent_3"] = response.usage.input_tokens + response.usage.output_tokens
+    
+    usage = response.usage_metadata
+    token_counts["agent_3"] = usage.total_token_count
     latencies_ms["agent_3"] = elapsed_ms
 
     return {

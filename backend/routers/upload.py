@@ -14,8 +14,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from db.models import create_run
-from services.spaces import ALLOWED_CONTENT_TYPES, generate_presigned_put
+from db.models import create_run, create_user
+from services.r2 import ALLOWED_CONTENT_TYPES, generate_presigned_put
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +61,6 @@ async def generate_presign(request: Request, payload: PresignRequest) -> Any:
         raise HTTPException(status_code=401, detail="Authentication required")
     
     user_id_str: str = user_state["user_id"]
-    try:
-        user_uuid: uuid.UUID = uuid.UUID(user_id_str)
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid user ID format in token")
 
     # 2. Input validation
     if payload.content_type not in ALLOWED_CONTENT_TYPES:
@@ -84,35 +80,52 @@ async def generate_presign(request: Request, payload: PresignRequest) -> Any:
     run_id = uuid.uuid4()
     expires_in = 900
 
-    # 4. Generate the presigned URL via spaces service
+    # 3. Ensure user exists in local DB and get their internal ID
+    db = request.app.state.db
     try:
-        spaces_data = generate_presigned_put(
-            user_id=user_uuid,
+        # Sync user (upsert)
+        db_user = await create_user(
+            db=db,
+            neon_user_id=user_id_str,
+            email=user_state.get("email", "unknown@example.com")
+        )
+        internal_user_id = db_user["_id"]
+    except Exception as exc:
+        logger.error("User sync failed: %s", exc)
+        raise HTTPException(status_code=500, detail="User synchronization failed")
+
+    # 4. Generate run provisioning parameters
+    run_id = uuid.uuid4()
+    expires_in = 900
+
+    # 5. Generate the presigned URL via R2 service using the internal_user_id
+    try:
+        r2_data = generate_presigned_put(
+            user_id=internal_user_id,
             run_id=run_id,
             filename=payload.filename,
             content_type=payload.content_type,
             expires=expires_in,
         )
     except Exception as exc:
-        logger.error("Spaces presign generation failed: %s", exc)
+        logger.error("R2 presign generation failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to generate upload URL")
 
-    # 5. Insert queued run into database
-    pool = request.app.state.pool
+    # 6. Insert queued run into database using the internal_user_id
     try:
         await create_run(
-            pool=pool,
-            user_id=user_uuid,
+            db=db,
+            user_id=internal_user_id,
             vertical=payload.vertical,
-            spaces_object_key=spaces_data["object_key"],
+            storage_object_key=r2_data["object_key"],
         )
     except Exception as exc:
         logger.error("DB create_run failed: %s", exc)
         raise HTTPException(status_code=500, detail="Database insertion failed")
 
     return {
-        "presigned_url": spaces_data["presigned_url"],
-        "object_key": spaces_data["object_key"],
+        "presigned_url": r2_data["presigned_url"],
+        "object_key": r2_data["object_key"],
         "run_id": run_id,
         "expires_in": expires_in,
     }

@@ -1,10 +1,14 @@
 # FastAPI Backend dependencies
+python-dotenv
 fastapi
 uvicorn
-asyncpg
+motor
+pymongo[srv]
+google-generativeai
 boto3
 PyJWT[crypto]
 upstash-redis
 pydantic
 python-multipart
 httpx
+pytest

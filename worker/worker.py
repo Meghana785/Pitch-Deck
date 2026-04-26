@@ -21,13 +21,14 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import asyncpg
+import datetime
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from upstash_redis.asyncio import Redis
 
 from pipeline.graph import pipeline
 from pipeline.state import PipelineState
 from services.extractor import extract_text
-from services.spaces import download_file
+from services.r2 import download_file
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -100,28 +101,26 @@ async def _publish_progress(
 
 
 async def _mark_failed(
-    pool: asyncpg.Pool,
+    db: AsyncIOMotorDatabase,
     redis: Redis,
     run_id: str,
     error_message: str,
 ) -> None:
     """
     Set an analysis_run's status to 'failed' and publish a failed progress event.
-    Used in multiple error branches throughout the job loop.
     """
     try:
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE analysis_runs
-                   SET status = 'failed',
-                       error_message = $2,
-                       completed_at = NOW()
-                 WHERE id = $1
-                """,
-                run_id,
-                error_message[:2000],  # Guard against unexpectedly long messages
-            )
+        now = datetime.datetime.now(datetime.timezone.utc)
+        await db.analysis_runs.update_one(
+            {"_id": run_id},
+            {
+                "$set": {
+                    "status": "failed",
+                    "error_message": error_message[:2000],
+                    "completed_at": now
+                }
+            }
+        )
     except Exception as db_exc:
         logger.error("Could not mark run %s failed in DB: %s", run_id, db_exc)
 
@@ -136,16 +135,11 @@ async def _mark_failed(
 
 async def _process_job(
     payload: dict[str, Any],
-    pool: asyncpg.Pool,
+    db: AsyncIOMotorDatabase,
     redis: Redis,
 ) -> None:
     """
     Execute a single analysis job end-to-end:
-
-    A. Download file from DO Spaces
-    B. Extract text (PDF / PPTX)
-    C. Run the 4-agent LangGraph pipeline
-    D. Persist results to Neon Postgres
     """
     run_id  = payload["run_id"]
     job_id  = payload["job_id"]
@@ -156,11 +150,10 @@ async def _process_job(
     logger.info("Processing job %s for run %s", job_id, run_id)
 
     # Mark running
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE analysis_runs SET status = 'running' WHERE id = $1",
-            run_id,
-        )
+    await db.analysis_runs.update_one(
+        {"_id": run_id},
+        {"$set": {"status": "running"}}
+    )
 
     await _publish_progress(
         redis, run_id,
@@ -174,7 +167,7 @@ async def _process_job(
         file_bytes, filename = await download_file(object_key)
     except Exception as exc:
         logger.error("Job %s — download failed: %s", job_id, exc)
-        await _mark_failed(pool, redis, run_id, f"File download failed: {exc}")
+        await _mark_failed(db, redis, run_id, f"File download failed: {exc}")
         return
 
     # ------------------------------------------------------------------
@@ -185,7 +178,7 @@ async def _process_job(
         logger.info("Job %s — extracted %d chars from '%s'", job_id, len(extracted_text), filename)
     except Exception as exc:
         logger.error("Job %s — text extraction failed: %s", job_id, exc)
-        await _mark_failed(pool, redis, run_id, f"Text extraction failed: {exc}")
+        await _mark_failed(db, redis, run_id, f"Text extraction failed: {exc}")
         return
 
     # ------------------------------------------------------------------
@@ -226,7 +219,7 @@ async def _process_job(
 
     except Exception as exc:
         logger.error("Job %s — pipeline failed: %s\n%s", job_id, exc, traceback.format_exc())
-        await _mark_failed(pool, redis, run_id, f"Pipeline error: {exc}")
+        await _mark_failed(db, redis, run_id, f"Pipeline error: {exc}")
         return
 
     # ------------------------------------------------------------------
@@ -237,10 +230,6 @@ async def _process_job(
         latencies_ms: dict[str, int] = final_state.get("latencies_ms") or {}
         report_data:  dict[str, Any] = final_state.get("report") or {}
 
-        # Split tokens into input / output (stored per-agent as a combined total;
-        # Anthropic usage returns both, but we only summed them above for tokens.
-        # We'll treat stored count as total and split 50/50 for cost calculation
-        # since the agents each only store the combined total.
         total_tokens     = sum(token_counts.values())
         input_tokens     = total_tokens // 2
         output_tokens    = total_tokens - input_tokens
@@ -252,56 +241,46 @@ async def _process_job(
         )).quantize(Decimal("0.0001"))
 
         # Persist report
-        report_id = uuid.uuid4()
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO reports
-                    (id, run_id, user_id, vertical, assumption_map, blind_spots, sharpening, raw_output)
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8)
-                """,
-                report_id,
-                run_id,
-                user_id,
-                vertical,
-                json.dumps(report_data.get("assumption_map", [])),
-                json.dumps(report_data.get("blind_spots", [])),
-                json.dumps(report_data.get("sharpening_prompts", [])),
-                json.dumps(report_data),
-            )
+        report_id = str(uuid.uuid4())
+        now = datetime.datetime.now(datetime.timezone.utc)
+        
+        report_doc = {
+            "_id": report_id,
+            "run_id": run_id,
+            "user_id": user_id,
+            "vertical": vertical,
+            "assumption_map": report_data.get("assumption_map", []),
+            "blind_spots": report_data.get("blind_spots", []),
+            "sharpening": report_data.get("sharpening_prompts", []),
+            "raw_output": report_data,
+            "created_at": now
+        }
+        await db.reports.insert_one(report_doc)
 
-            # Update analysis_run with telemetry and mark done
-            await conn.execute(
-                """
-                UPDATE analysis_runs
-                   SET status        = 'done',
-                       agent_1_ms    = $2,
-                       agent_2_ms    = $3,
-                       agent_3_ms    = $4,
-                       agent_4_ms    = $5,
-                       total_ms      = $6,
-                       input_tokens  = $7,
-                       output_tokens = $8,
-                       cost_usd      = $9,
-                       completed_at  = NOW()
-                 WHERE id = $1
-                """,
-                run_id,
-                latencies_ms.get("agent_1"),
-                latencies_ms.get("agent_2"),
-                latencies_ms.get("agent_3"),
-                latencies_ms.get("agent_4"),
-                total_ms,
-                input_tokens,
-                output_tokens,
-                cost_usd,
-            )
+        # Update analysis_run with telemetry and mark done
+        await db.analysis_runs.update_one(
+            {"_id": run_id},
+            {
+                "$set": {
+                    "status": "done",
+                    "agent_1_ms": latencies_ms.get("agent_1"),
+                    "agent_2_ms": latencies_ms.get("agent_2"),
+                    "agent_3_ms": latencies_ms.get("agent_3"),
+                    "agent_4_ms": latencies_ms.get("agent_4"),
+                    "total_ms": total_ms,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cost_usd": float(cost_usd), # MongoDB handles floats better than Decimal in some drivers
+                    "completed_at": now
+                }
+            }
+        )
 
         await _publish_progress(
             redis, run_id,
             {
                 "event":     "done",
-                "report_id": str(report_id),
+                "report_id": report_id,
                 "message":   "Analysis complete",
             },
         )
@@ -312,7 +291,7 @@ async def _process_job(
 
     except Exception as exc:
         logger.error("Job %s — save failed: %s\n%s", job_id, exc, traceback.format_exc())
-        await _mark_failed(pool, redis, run_id, f"Result save failed: {exc}")
+        await _mark_failed(db, redis, run_id, f"Result save failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -330,17 +309,16 @@ async def run_worker() -> None:
     # ------------------------------------------------------------------
     # Startup
     # ------------------------------------------------------------------
-    pool = await asyncpg.create_pool(
-        dsn=os.environ["NEON_DATABASE_URL"],
-        min_size=2,
-        max_size=5,
-        command_timeout=30,
-        ssl="require",
-    )
+    from motor.motor_asyncio import AsyncIOMotorClient
+    client = AsyncIOMotorClient(os.environ["MONGODB_URI"])
+    # Extract DB name from URI or use default 'pitchready'
+    db_name = client.get_database().name or "pitchready"
+    db = client[db_name]
+
     redis = _get_redis()
     verticals = _load_verticals()
 
-    logger.info("PitchReady worker started. Verticals loaded: %s", list(verticals.keys()))
+    logger.info("PitchReady worker started (MongoDB). Verticals loaded: %s", list(verticals.keys()))
 
     # ------------------------------------------------------------------
     # Shutdown handling
@@ -384,7 +362,7 @@ async def run_worker() -> None:
 
             # Process the job; all internal errors are caught and logged inside
             try:
-                await _process_job(job_payload, pool, redis)
+                await _process_job(job_payload, db, redis)
             except Exception as exc:
                 logger.error(
                     "Unhandled exception in job %s: %s\n%s",
@@ -395,11 +373,11 @@ async def run_worker() -> None:
                 # Best-effort failure marking — run_id may be missing
                 run_id = job_payload.get("run_id", "")
                 if run_id:
-                    await _mark_failed(pool, redis, run_id, f"Unhandled worker error: {exc}")
+                    await _mark_failed(db, redis, run_id, f"Unhandled worker error: {exc}")
 
     finally:
         logger.info("Worker shutting down gracefully")
-        await pool.close()
+        client.close()
 
 
 # ---------------------------------------------------------------------------

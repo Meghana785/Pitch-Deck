@@ -1,108 +1,61 @@
 """
-Neon Postgres — schema DDL + asyncpg query helpers.
-No ORM; raw asyncpg throughout.
+MongoDB — Collection initialization + Motor query helpers.
+No ORM; raw Motor (pymongo-style) throughout.
 """
 
 from __future__ import annotations
 
+import datetime
 import os
-import json
 import uuid
 from typing import Any, Optional
 
-import asyncpg
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
+from pymongo import ASCENDING, DESCENDING, IndexModel
+
 
 # ---------------------------------------------------------------------------
-# DDL
+# Client & DB
 # ---------------------------------------------------------------------------
 
-_CREATE_EXTENSION = "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
-
-_CREATE_USERS = """
-CREATE TABLE IF NOT EXISTS users (
-    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    neon_user_id TEXT        UNIQUE NOT NULL,
-    email        TEXT        UNIQUE NOT NULL,
-    plan         TEXT        NOT NULL DEFAULT 'free',
-    runs_used    INTEGER     NOT NULL DEFAULT 0,
-    runs_limit   INTEGER     NOT NULL DEFAULT 3,
-    created_at   TIMESTAMPTZ DEFAULT NOW(),
-    last_active  TIMESTAMPTZ DEFAULT NOW()
-);
-"""
-
-_CREATE_ANALYSIS_RUNS = """
-CREATE TABLE IF NOT EXISTS analysis_runs (
-    id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id           UUID        REFERENCES users(id),
-    vertical          TEXT        NOT NULL,
-    spaces_object_key TEXT        NOT NULL,
-    status            TEXT        NOT NULL DEFAULT 'queued',
-    agent_1_ms        INTEGER,
-    agent_2_ms        INTEGER,
-    agent_3_ms        INTEGER,
-    agent_4_ms        INTEGER,
-    total_ms          INTEGER,
-    input_tokens      INTEGER,
-    output_tokens     INTEGER,
-    cost_usd          NUMERIC(8,4),
-    error_message     TEXT,
-    created_at        TIMESTAMPTZ DEFAULT NOW(),
-    completed_at      TIMESTAMPTZ
-);
-"""
-
-_CREATE_REPORTS = """
-CREATE TABLE IF NOT EXISTS reports (
-    id             UUID  PRIMARY KEY DEFAULT gen_random_uuid(),
-    run_id         UUID  REFERENCES analysis_runs(id),
-    user_id        UUID  REFERENCES users(id),
-    vertical       TEXT  NOT NULL,
-    assumption_map JSONB NOT NULL,
-    blind_spots    JSONB NOT NULL,
-    sharpening     JSONB NOT NULL,
-    raw_output     TEXT,
-    created_at     TIMESTAMPTZ DEFAULT NOW()
-);
-"""
-
-_CREATE_INDEXES = """
-CREATE INDEX IF NOT EXISTS idx_runs_user_id    ON analysis_runs(user_id);
-CREATE INDEX IF NOT EXISTS idx_runs_status     ON analysis_runs(status);
-CREATE INDEX IF NOT EXISTS idx_runs_created    ON analysis_runs(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_reports_user_id ON reports(user_id);
-CREATE INDEX IF NOT EXISTS idx_reports_run_id  ON reports(run_id);
-"""
-
-# ---------------------------------------------------------------------------
-# Pool
-# ---------------------------------------------------------------------------
-
-async def create_pool() -> asyncpg.Pool:
-    """Create and return an asyncpg connection pool using NEON_DATABASE_URL."""
-    dsn = os.environ["NEON_DATABASE_URL"]
-    pool: asyncpg.Pool = await asyncpg.create_pool(
-        dsn=dsn,
-        min_size=2,
-        max_size=10,
-        command_timeout=30,
-        ssl="require",
-    )
-    return pool
+async def create_db_client() -> AsyncIOMotorClient:
+    """Create and return a Motor AsyncIOMotorClient using MONGODB_URI."""
+    uri = os.environ["MONGODB_URI"]
+    client = AsyncIOMotorClient(uri)
+    return client
 
 
-async def init_db(pool: asyncpg.Pool) -> None:
-    """Run all CREATE TABLE IF NOT EXISTS statements and indexes."""
-    async with pool.acquire() as conn:
-        await conn.execute(_CREATE_EXTENSION)
-        await conn.execute(_CREATE_USERS)
-        await conn.execute(_CREATE_ANALYSIS_RUNS)
-        await conn.execute(_CREATE_REPORTS)
-        # Indexes are individual statements; execute one-by-one
-        for stmt in _CREATE_INDEXES.strip().split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                await conn.execute(stmt)
+def get_db(client: AsyncIOMotorClient) -> AsyncIOMotorDatabase:
+    """Return the database instance from the client."""
+    # Try to get default DB name from URI, fallback to 'pitchready'
+    try:
+        db_name = client.get_default_database().name
+    except Exception:
+        db_name = "pitchready"
+    return client[db_name]
+
+
+async def init_db(db: AsyncIOMotorDatabase) -> None:
+    """Initialize collections and create necessary indexes."""
+    # 1. Users collection
+    await db.users.create_indexes([
+        IndexModel([("neon_user_id", ASCENDING)], unique=True),
+        IndexModel([("email", ASCENDING)], unique=True),
+    ])
+
+    # 2. Analysis Runs collection
+    await db.analysis_runs.create_indexes([
+        IndexModel([("user_id", ASCENDING)]),
+        IndexModel([("status", ASCENDING)]),
+        IndexModel([("created_at", DESCENDING)]),
+    ])
+
+    # 3. Reports collection
+    await db.reports.create_indexes([
+        IndexModel([("run_id", ASCENDING)], unique=True),
+        IndexModel([("user_id", ASCENDING)]),
+        IndexModel([("created_at", DESCENDING)]),
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -110,38 +63,41 @@ async def init_db(pool: asyncpg.Pool) -> None:
 # ---------------------------------------------------------------------------
 
 async def get_user_by_neon_id(
-    pool: asyncpg.Pool,
+    db: AsyncIOMotorDatabase,
     neon_user_id: str,
-) -> Optional[asyncpg.Record]:
-    """Return the users row for *neon_user_id*, or None if not found."""
-    async with pool.acquire() as conn:
-        row: Optional[asyncpg.Record] = await conn.fetchrow(
-            "SELECT * FROM users WHERE neon_user_id = $1",
-            neon_user_id,
-        )
-    return row
+) -> Optional[dict]:
+    """Return the user document for *neon_user_id*, or None if not found."""
+    user = await db.users.find_one({"neon_user_id": neon_user_id})
+    return user
 
 
 async def create_user(
-    pool: asyncpg.Pool,
+    db: AsyncIOMotorDatabase,
     neon_user_id: str,
     email: str,
-) -> asyncpg.Record:
-    """Insert a new user row and return it."""
-    async with pool.acquire() as conn:
-        row: asyncpg.Record = await conn.fetchrow(
-            """
-            INSERT INTO users (neon_user_id, email)
-            VALUES ($1, $2)
-            ON CONFLICT (neon_user_id) DO UPDATE
-                SET email = EXCLUDED.email,
-                    last_active = NOW()
-            RETURNING *
-            """,
-            neon_user_id,
-            email,
-        )
-    return row
+) -> dict:
+    """Upsert a user document and return it."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    user = await db.users.find_one_and_update(
+        {"neon_user_id": neon_user_id},
+        {
+            "$set": {
+                "email": email,
+                "last_active": now,
+            },
+            "$setOnInsert": {
+                "_id": str(uuid.uuid4()),
+                "neon_user_id": neon_user_id,
+                "plan": "free",
+                "runs_used": 0,
+                "runs_limit": 3,
+                "created_at": now,
+            }
+        },
+        upsert=True,
+        return_document=True
+    )
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -149,55 +105,51 @@ async def create_user(
 # ---------------------------------------------------------------------------
 
 async def create_run(
-    pool: asyncpg.Pool,
-    user_id: uuid.UUID,
+    db: AsyncIOMotorDatabase,
+    user_id: str | uuid.UUID,
     vertical: str,
-    spaces_object_key: str,
-) -> asyncpg.Record:
+    storage_object_key: str,
+) -> dict:
     """Insert a new analysis_run with status='queued' and return it."""
-    async with pool.acquire() as conn:
-        row: asyncpg.Record = await conn.fetchrow(
-            """
-            INSERT INTO analysis_runs (user_id, vertical, spaces_object_key)
-            VALUES ($1, $2, $3)
-            RETURNING *
-            """,
-            user_id,
-            vertical,
-            spaces_object_key,
-        )
-    return row
+    now = datetime.datetime.now(datetime.timezone.utc)
+    run_id = str(uuid.uuid4())
+    doc = {
+        "_id": run_id,
+        "user_id": str(user_id),
+        "vertical": vertical,
+        "storage_object_key": storage_object_key,
+        "status": "queued",
+        "created_at": now,
+    }
+    await db.analysis_runs.insert_one(doc)
+    return doc
 
 
 async def update_run_status(
-    pool: asyncpg.Pool,
-    run_id: uuid.UUID,
+    db: AsyncIOMotorDatabase,
+    run_id: str | uuid.UUID,
     status: str,
     error_message: Optional[str] = None,
-) -> Optional[asyncpg.Record]:
+) -> Optional[dict]:
     """
     Update the status (and optional error_message) of an analysis_run.
     Sets completed_at when status is 'done' or 'failed'.
-    Returns the updated row, or None if run_id not found.
     """
-    async with pool.acquire() as conn:
-        row: Optional[asyncpg.Record] = await conn.fetchrow(
-            """
-            UPDATE analysis_runs
-               SET status        = $2,
-                   error_message = COALESCE($3, error_message),
-                   completed_at  = CASE
-                                     WHEN $2 IN ('done', 'failed') THEN NOW()
-                                     ELSE completed_at
-                                   END
-             WHERE id = $1
-            RETURNING *
-            """,
-            run_id,
-            status,
-            error_message,
-        )
-    return row
+    now = datetime.datetime.now(datetime.timezone.utc)
+    update_doc = {"$set": {"status": status}}
+    
+    if error_message:
+        update_doc["$set"]["error_message"] = error_message
+        
+    if status in ("done", "failed"):
+        update_doc["$set"]["completed_at"] = now
+        
+    result = await db.analysis_runs.find_one_and_update(
+        {"_id": str(run_id)},
+        update_doc,
+        return_document=True
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -205,37 +157,31 @@ async def update_run_status(
 # ---------------------------------------------------------------------------
 
 async def save_report(
-    pool: asyncpg.Pool,
-    run_id: uuid.UUID,
-    user_id: uuid.UUID,
+    db: AsyncIOMotorDatabase,
+    run_id: str | uuid.UUID,
+    user_id: str | uuid.UUID,
     vertical: str,
     assumption_map: Any,
     blind_spots: Any,
     sharpening: Any,
-    raw_output: Optional[str] = None,
-) -> asyncpg.Record:
+    raw_output: Optional[dict | str] = None,
+) -> dict:
     """
-    Insert a report row.
-    *assumption_map*, *blind_spots*, and *sharpening* may be dicts or
-    already-serialised JSON strings; both are handled transparently.
+    Insert a report document.
     """
-    def _to_json(v: Any) -> str:
-        return json.dumps(v) if not isinstance(v, str) else v
+    now = datetime.datetime.now(datetime.timezone.utc)
+    report_id = str(uuid.uuid4())
+    doc = {
+        "_id": report_id,
+        "run_id": str(run_id),
+        "user_id": str(user_id),
+        "vertical": vertical,
+        "assumption_map": assumption_map,
+        "blind_spots": blind_spots,
+        "sharpening": sharpening,
+        "raw_output": raw_output,
+        "created_at": now,
+    }
+    await db.reports.insert_one(doc)
+    return doc
 
-    async with pool.acquire() as conn:
-        row: asyncpg.Record = await conn.fetchrow(
-            """
-            INSERT INTO reports
-                (run_id, user_id, vertical, assumption_map, blind_spots, sharpening, raw_output)
-            VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7)
-            RETURNING *
-            """,
-            run_id,
-            user_id,
-            vertical,
-            _to_json(assumption_map),
-            _to_json(blind_spots),
-            _to_json(sharpening),
-            raw_output,
-        )
-    return row

@@ -11,17 +11,16 @@ import asyncio
 import json
 import logging
 import time
+import os
 
-import anthropic
+import google.generativeai as genai
 
 from pipeline.state import PipelineState
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-sonnet-4-5"
-_MAX_TOKENS = 1500
-_RETRIES = 2
-_BACKOFF_S = 2
+_MODEL_NAME = "gemini-flash-latest"
+_MAX_TOKENS = 2048
 
 _SYSTEM_PROMPT = """\
 You are a structured data extractor for startup pitch decks.
@@ -35,37 +34,30 @@ use null. Do not invent information.\
 
 async def run_extractor(state: PipelineState) -> PipelineState:
     """
-    Agent 1: Extract structured fields from raw pitch deck text.
-
-    Updates state['structured'] with a parsed JSON dict.
-    Records token usage in state['token_counts']['agent_1'] and
-    latency in state['latencies_ms']['agent_1'].
+    Agent 1: Extract structured fields from raw pitch deck text using Gemini.
     """
-    client = anthropic.AsyncAnthropic()
+    genai.configure(api_key=os.environ["GEMINI_API"])
+    model = genai.GenerativeModel(
+        model_name=_MODEL_NAME,
+        system_instruction=_SYSTEM_PROMPT
+    )
+    
     start = time.perf_counter()
 
-    response = None
-    last_exc: Exception | None = None
-
-    for attempt in range(_RETRIES + 1):
-        try:
-            response = await client.messages.create(
-                model=_MODEL,
-                max_tokens=_MAX_TOKENS,
-                system=_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": state["raw_text"]}],
+    try:
+        response = await model.generate_content_async(
+            state["raw_text"],
+            generation_config=genai.GenerationConfig(
+                max_output_tokens=_MAX_TOKENS,
+                response_mime_type="application/json",
             )
-            break
-        except anthropic.APIStatusError as exc:
-            last_exc = exc
-            logger.warning("extractor attempt %d failed: %s", attempt + 1, exc)
-            if attempt < _RETRIES:
-                await asyncio.sleep(_BACKOFF_S)
-    else:
-        raise RuntimeError(f"[extractor] API failed after {_RETRIES + 1} attempts: {last_exc}")
+        )
+    except Exception as exc:
+        logger.error("[extractor] Gemini API failed: %s", exc)
+        raise RuntimeError(f"[extractor] Gemini API failed: {exc}")
 
     elapsed_ms = int((time.perf_counter() - start) * 1000)
-    raw_content = response.content[0].text
+    raw_content = response.text
 
     try:
         structured = json.loads(raw_content)
@@ -74,7 +66,10 @@ async def run_extractor(state: PipelineState) -> PipelineState:
 
     token_counts = dict(state.get("token_counts") or {})
     latencies_ms = dict(state.get("latencies_ms") or {})
-    token_counts["agent_1"] = response.usage.input_tokens + response.usage.output_tokens
+    
+    # Gemini usage metadata
+    usage = response.usage_metadata
+    token_counts["agent_1"] = usage.total_token_count
     latencies_ms["agent_1"] = elapsed_ms
 
     return {

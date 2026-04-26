@@ -43,26 +43,22 @@ async def check_usage_limit(request: Request) -> None:
         # Auth middleware already handles missing tokens; nothing to check here.
         return
 
-    pool: asyncpg.Pool = request.app.state.pool
+    db = request.app.state.db
     neon_user_id: str = user_state["user_id"]
 
-    row: Optional[asyncpg.Record] = await pool.fetchrow(
-        """
-        SELECT plan, runs_used, runs_limit
-          FROM users
-         WHERE neon_user_id = $1
-        """,
-        neon_user_id,
+    user_doc = await db.users.find_one(
+        {"neon_user_id": neon_user_id},
+        {"plan": 1, "runs_used": 1, "runs_limit": 1}
     )
 
-    if row is None:
+    if user_doc is None:
         # User not yet in DB — first sync will create them; allow the request.
         logger.warning("Usage check: user %s not found in DB.", neon_user_id)
         return
 
-    plan: str = row["plan"]
-    runs_used: int = row["runs_used"]
-    runs_limit: int = row["runs_limit"]
+    plan: str = user_doc["plan"]
+    runs_used: int = user_doc["runs_used"]
+    runs_limit: int = user_doc["runs_limit"]
 
     logger.debug(
         "Usage check for %s: plan=%s runs_used=%d runs_limit=%d",
