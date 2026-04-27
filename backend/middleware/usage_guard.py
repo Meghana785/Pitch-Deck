@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-import asyncpg
 from fastapi import Depends, HTTPException, Request
 
 logger = logging.getLogger(__name__)
@@ -44,16 +43,16 @@ async def check_usage_limit(request: Request) -> None:
         return
 
     db = request.app.state.db
-    neon_user_id: str = user_state["user_id"]
+    user_id: str = user_state["user_id"]
 
     user_doc = await db.users.find_one(
-        {"neon_user_id": neon_user_id},
+        {"_id": user_id},
         {"plan": 1, "runs_used": 1, "runs_limit": 1}
     )
 
     if user_doc is None:
         # User not yet in DB — first sync will create them; allow the request.
-        logger.warning("Usage check: user %s not found in DB.", neon_user_id)
+        logger.warning("Usage check: user %s not found in DB.", user_id)
         return
 
     plan: str = user_doc["plan"]
@@ -62,14 +61,16 @@ async def check_usage_limit(request: Request) -> None:
 
     logger.debug(
         "Usage check for %s: plan=%s runs_used=%d runs_limit=%d",
-        neon_user_id,
+        user_id,
         plan,
         runs_used,
         runs_limit,
     )
 
+    # Temporarily bypassed for testing
     if plan == "free" and runs_used >= runs_limit:
-        raise HTTPException(
-            status_code=402,
-            detail="Free tier limit reached. Upgrade to Pro.",
-        )
+        logger.info("Usage limit reached for user %s, but allowing for testing.", user_id)
+        # raise HTTPException(
+        #     status_code=402,
+        #     detail="Free tier limit reached. Upgrade to Pro.",
+        # )

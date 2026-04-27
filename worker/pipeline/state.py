@@ -16,6 +16,8 @@ class PipelineState(TypedDict):
     vertical: str        # e.g. 'logistics_saas'
     run_id: str
     user_id: str
+    skeptic_level: str   # high, medium, supportive
+    focus_area: str      # general, technical, financial, market
 
     # ---- Agent outputs -------------------------------------------------
     structured: dict     # Agent 1 — structured fields extracted from deck

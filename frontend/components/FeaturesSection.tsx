@@ -43,20 +43,20 @@ export function FeaturesSection() {
     return (
         <section
             id="features"
-            className="py-24 bg-black text-white w-full relative z-10 overflow-hidden"
+            className="py-24 bg-brand-bg text-zinc-900 dark:text-white w-full relative z-10 overflow-hidden transition-colors duration-300"
         >
             {/* Section Header */}
             <div className="max-w-7xl mx-auto px-6 mb-16 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
                 <h2 className="text-4xl md:text-6xl font-black tracking-tighter uppercase">
-                    THE ANATOMY<br className="hidden sm:block" /> OF A PERFECT DEAL.
+                    THE ANATOMY<br className="hidden sm:block" /> OF A <span className="text-brand-red">PERFECT</span> DEAL.
                 </h2>
-                <p className="text-zinc-500 max-w-xs text-sm font-light leading-relaxed sm:text-right">
+                <p className="text-zinc-500 max-w-xs text-sm font-light leading-relaxed sm:text-right italic">
                     Forget manual research. Our multi-agent system constructs bulletproof theses on demand.
                 </p>
             </div>
 
             {/* Feature Rows */}
-            <div className="divide-y divide-white/[0.06] border-t border-white/[0.06]">
+            <div className="divide-y divide-zinc-100 dark:divide-white/[0.06] border-t border-zinc-100 dark:divide-white/[0.06]">
                 {features.map((feature, idx) => (
                     <FeatureRow key={feature.index} feature={feature} index={idx} />
                 ))}
@@ -86,24 +86,24 @@ function FeatureRow({ feature, index }: { feature: Feature; index: number }) {
 
                 {/* Index */}
                 <div className="col-span-2 sm:col-span-1">
-                    <span className="text-xs font-mono text-zinc-600 tracking-[0.3em] group-hover:text-brand-red transition-colors duration-300">
+                    <span className="text-xs font-mono text-brand-red dark:text-zinc-600 tracking-[0.3em] group-hover:scale-110 transition-all duration-300">
                         {feature.index}
                     </span>
                 </div>
 
                 {/* Tag */}
                 <div className="col-span-10 sm:col-span-2 flex items-center">
-                    <span className="text-[10px] font-sans font-bold uppercase tracking-[0.25em] text-zinc-600 border border-zinc-800 px-2 py-1 group-hover:border-brand-red/40 group-hover:text-zinc-400 transition-all duration-300">
+                    <span className="text-[10px] font-sans font-bold uppercase tracking-[0.25em] text-zinc-400 dark:text-zinc-600 border border-zinc-200 dark:border-zinc-800 px-2 py-1 group-hover:border-brand-red group-hover:text-brand-red transition-all duration-300">
                         {feature.tag}
                     </span>
                 </div>
 
                 {/* Title + Description */}
                 <div className="col-span-12 sm:col-span-5 flex flex-col gap-2 sm:pl-4">
-                    <h3 className="text-xl md:text-2xl font-bold tracking-tight group-hover:text-white transition-colors duration-300">
+                    <h3 className="text-xl md:text-2xl font-serif text-zinc-900 dark:text-white tracking-tight group-hover:text-brand-red transition-all duration-300">
                         {feature.title}
                     </h3>
-                    <p className="text-zinc-500 text-sm leading-relaxed font-light max-w-sm group-hover:text-zinc-400 transition-colors duration-300">
+                    <p className="text-zinc-500 text-sm leading-relaxed font-sans font-light max-w-sm transition-colors duration-300">
                         {feature.description}
                     </p>
                 </div>
@@ -111,7 +111,7 @@ function FeatureRow({ feature, index }: { feature: Feature; index: number }) {
                 {/* Stat — massive editorial watermark style */}
                 <div className="col-span-12 sm:col-span-4 flex items-center justify-start sm:justify-end gap-3 mt-4 sm:mt-0">
                     <div className="relative flex items-baseline gap-3">
-                        <span className="text-5xl md:text-7xl font-black tracking-tighter text-white/10 group-hover:text-brand-red/70 transition-colors duration-500 select-none">
+                        <span className="text-5xl md:text-7xl font-serif italic text-zinc-100 dark:text-white/10 group-hover:text-brand-red/20 dark:group-hover:text-brand-red/70 transition-colors duration-500 select-none">
                             {feature.stat}
                         </span>
                         <div className="flex flex-col">

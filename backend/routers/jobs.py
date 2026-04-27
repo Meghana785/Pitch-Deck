@@ -17,9 +17,8 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from upstash_redis.asyncio import Redis
 
-from services.queue import get_job_status, get_redis_client
+
 
 logger = logging.getLogger(__name__)
 
@@ -128,37 +127,12 @@ async def stream_progress(request: Request, run_id: uuid.UUID) -> StreamingRespo
     initial_status = row["status"]
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        redis: Redis = get_redis_client()
-        redis_key = f"pitchready:progress:{run_id}"
-
-        # 2. Check current status from DB
-        # If already done/failed, we just emit the final state and close
-        if initial_status == "done":
-            # Attempt to fetch the last progress event so we can return the report_id
-            last_raw = await redis.get(redis_key)
-            report_id = None
-            if last_raw:
-                try:
-                    last_event = json.loads(last_raw)
-                    if last_event.get("event") == "done":
-                        report_id = last_event.get("report_id")
-                except json.JSONDecodeError:
-                    pass
-            
-            yield _format_sse(None, {"event": "done", "report_id": report_id})
-            return
-
-        if initial_status == "failed":
-            yield _format_sse(None, {"event": "failed", "message": row["error_message"] or "Job failed"})
-            return
-
-        # 3. Polling loop setup
-        # If queued or running, we poll Redis every 500ms
+        # 2. Polling loop setup
         poll_interval = 0.5
         keepalive_interval = 15.0
-        timeout_total = 300.0  # 5 minutes
+        timeout_total = 600.0  # 10 minutes for AI processing
 
-        last_emitted_event_raw: str | None = None
+        last_emitted_event_id: str | None = None
         time_elapsed: float = 0.0
         time_since_keepalive: float = 0.0
 
@@ -169,23 +143,33 @@ async def stream_progress(request: Request, run_id: uuid.UUID) -> StreamingRespo
                     logger.info("Client disconnected from SSE stream for run %s", run_id)
                     break
 
-                # Read from Redis
-                current_raw = await redis.get(redis_key)
-                
-                # If changed, emit and update tracked state
-                if current_raw and current_raw != last_emitted_event_raw:
-                    last_emitted_event_raw = current_raw
-                    try:
-                        current_event_dict = json.loads(current_raw)
-                        # The client expects data to be the whole JSON object containing the 'event' key
-                        yield _format_sse(None, current_event_dict)
+                # Read current run state from MongoDB
+                current_run = await db.analysis_runs.find_one(
+                    {"_id": str(run_id)},
+                    {"status": 1, "last_event": 1, "error_message": 1}
+                )
 
-                        # 4/5. Terminal states from Redis
-                        event_type = current_event_dict.get("event")
-                        if event_type in ("done", "failed"):
-                            return  # close stream cleanly
-                    except json.JSONDecodeError:
-                        logger.warning("Malformed JSON in Redis for run %s", run_id)
+                if not current_run:
+                    yield _format_sse(None, {"event": "failed", "message": "Run not found during streaming"})
+                    break
+
+                current_event = current_run.get("last_event")
+                
+                # We use the JSON string of the event to detect changes (since we don't have a specific event_id)
+                current_event_json = json.dumps(current_event) if current_event else None
+                
+                if current_event and current_event_json != last_emitted_event_id:
+                    last_emitted_event_id = current_event_json
+                    yield _format_sse(None, current_event)
+
+                    # Terminal states
+                    if current_event.get("event") in ("done", "failed"):
+                        return
+
+                # Check status as a fallback
+                if current_run["status"] == "failed" and (not current_event or current_event.get("event") != "failed"):
+                    yield _format_sse(None, {"event": "failed", "message": current_run.get("error_message") or "Job failed"})
+                    return
 
                 # Keepalive logic
                 if time_since_keepalive >= keepalive_interval:
@@ -202,7 +186,6 @@ async def stream_progress(request: Request, run_id: uuid.UUID) -> StreamingRespo
                 yield _format_sse(None, {"event": "timeout", "message": "Stream timed out"})
 
         except asyncio.CancelledError:
-            # 6. Graceful cleanup on client disconnect
             logger.info("SSE stream cancelled for run %s", run_id)
             raise
         except GeneratorExit:

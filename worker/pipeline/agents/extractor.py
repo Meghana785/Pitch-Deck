@@ -16,17 +16,21 @@ import os
 import google.generativeai as genai
 
 from pipeline.state import PipelineState
+from utils.json_cleaner import clean_and_parse_json
 
 logger = logging.getLogger(__name__)
 
 _MODEL_NAME = "gemini-flash-latest"
-_MAX_TOKENS = 2048
+_MAX_TOKENS = 4096
 
 _SYSTEM_PROMPT = """\
 You are a structured data extractor for startup pitch decks.
 Extract exactly these fields from the pitch text: problem, solution, \
 target_market, market_size, competitors (list), gtm_strategy, \
-team_description, revenue_model, financials_summary.
+team_description, revenue_model, financials_summary, vertical.
+For `vertical`, infer the startup's category as a lowercase underscore slug \
+(e.g. 'logistics_saas', 'fintech', 'edtech', 'healthtech', 'ecommerce', \
+'b2b_saas', 'dtc_consumer', 'proptech', 'legaltech', 'climate_tech', 'other').
 Return only valid JSON. If a field is not present in the deck, \
 use null. Do not invent information.\
 """
@@ -60,8 +64,10 @@ async def run_extractor(state: PipelineState) -> PipelineState:
     raw_content = response.text
 
     try:
-        structured = json.loads(raw_content)
-    except json.JSONDecodeError as exc:
+        structured = clean_and_parse_json(raw_content)
+        if isinstance(structured, list) and len(structured) > 0:
+            structured = structured[0]
+    except Exception as exc:
         raise ValueError(f"[extractor] JSON parse failed: {exc}\nRaw: {raw_content[:300]}") from exc
 
     token_counts = dict(state.get("token_counts") or {})
@@ -72,9 +78,13 @@ async def run_extractor(state: PipelineState) -> PipelineState:
     token_counts["agent_1"] = usage.total_token_count
     latencies_ms["agent_1"] = elapsed_ms
 
+    # Promote AI-detected vertical into top-level state so downstream nodes use it
+    detected_vertical = structured.get("vertical") or state.get("vertical") or "other"
+
     return {
         **state,
         "structured": structured,
+        "vertical": detected_vertical,
         "token_counts": token_counts,
         "latencies_ms": latencies_ms,
     }

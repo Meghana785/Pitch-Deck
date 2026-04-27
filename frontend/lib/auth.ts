@@ -1,149 +1,103 @@
-/**
- * Neon Auth SDK wrapper for PitchReady.
- * Provides session management, token access, and auth state subscription.
- */
+"use client";
 
-import { createInternalNeonAuth } from '@neondatabase/auth';
-import { redirect } from 'next/navigation';
+import Cookies from "js-cookie";
 
-// ---------------------------------------------------------------------------
-// Singleton client
-// ---------------------------------------------------------------------------
-
-let _authClient: ReturnType<typeof createInternalNeonAuth> | null = null;
-
-/**
- * Returns the singleton NeonAuth client.
- *
- * IMPORTANT: In the browser we point the BetterAuth client at the LOCAL Next.js
- * origin (i.e. window.location.origin = http://localhost:3000). The /api/auth
- * route handler proxies to Neon server-to-server, which:
- *   1. Avoids CORS preflight issues
- *   2. Sets session cookies on the correct (localhost) domain
- *   3. Allows getJWTToken() to read those cookies correctly
- */
-export function initAuth(): ReturnType<typeof createInternalNeonAuth> {
-    if (_authClient) return _authClient;
-
-    // Browser: use same-origin Next.js API routes
-    // SSR/Node: fall back to the configured auth URL
-    const url =
-        (typeof window !== 'undefined' && window.location.origin) ||
-        process.env.NEXT_PUBLIC_NEON_AUTH_URL ||
-        '';
-    if (!url) throw new Error('NEXT_PUBLIC_NEON_AUTH_URL is not set');
-
-    _authClient = createInternalNeonAuth(url);
-    return _authClient;
-}
-
-// ---------------------------------------------------------------------------
-// Session types
-// ---------------------------------------------------------------------------
+const TOKEN_KEY = "pitchready_token";
+const USER_KEY = "pitchready_user";
 
 export interface AuthUser {
-    id: string;
-    email: string;
-    name?: string;
+  id: string;
+  email: string;
+  plan: string;
 }
 
 export interface AuthSession {
-    user: AuthUser;
-    token: string;
+  user: AuthUser;
+  token: string;
 }
 
-// ---------------------------------------------------------------------------
-// Auth utilities
-// ---------------------------------------------------------------------------
+/**
+ * Save token and user info to cookies/localStorage
+ */
+export const setSession = (token: string, user: AuthUser) => {
+  Cookies.set(TOKEN_KEY, token, { expires: 7 }); // 7 days
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+};
 
 /**
- * Returns the raw JWT access token string, or null if not authenticated.
- * Uses the NeonAuth client's getJWTToken() — the correct API.
+ * Remove session data
+ */
+export const clearSession = () => {
+  Cookies.remove(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+};
+
+/**
+ * Get current token (Async for compatibility)
  */
 export async function getToken(): Promise<string | null> {
-    try {
-        const client = initAuth();
-        const token = await client.getJWTToken();
-        return token ?? null;
-    } catch {
-        return null;
-    }
+  return Cookies.get(TOKEN_KEY) ?? null;
 }
 
 /**
- * Returns the current authenticated session, or null if not authenticated.
- * Decodes user claims from the JWT payload (no extra network call).
+ * Get current user
+ */
+export function getUser(): AuthUser | null {
+  if (typeof window === "undefined") return null;
+  const data = localStorage.getItem(USER_KEY);
+  return data ? JSON.parse(data) : null;
+}
+
+/**
+ * Get current authenticated session (Async for compatibility)
  */
 export async function getSession(): Promise<AuthSession | null> {
-    try {
-        const token = await getToken();
-        if (!token) return null;
-
-        // Decode JWT payload (base64url middle segment — no verification needed client-side)
-        const payloadB64 = token.split('.')[1];
-        if (!payloadB64) return null;
-        const claims = JSON.parse(atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/')));
-
-        if (!claims?.sub) return null;
-
-        return {
-            user: {
-                id: claims.sub,
-                email: claims.email ?? '',
-                name: claims.name ?? undefined,
-            },
-            token,
-        };
-    } catch {
-        return null;
-    }
+  const token = await getToken();
+  const user = getUser();
+  if (!token || !user) return null;
+  return { user, token };
 }
 
 /**
- * Signs out the current user, clears the session, and redirects to /login.
+ * Signs out the current user and redirects
  */
 export async function signOut(): Promise<void> {
-    try {
-        const client = initAuth();
-        // BetterAuth client exposes signOut via adapter
-        await (client as any).signOut?.();
-    } catch {
-        // Proceed to redirect even if signOut call fails
-    }
-    redirect('/login');
+  clearSession();
+  if (typeof window !== "undefined") {
+    window.location.href = "/login";
+  }
 }
 
 /**
- * Subscribes to auth state changes.
- * Calls callback immediately with the current session, then on each change.
- *
- * @param callback - Invoked with the new session (or null on sign-out)
- * @returns Unsubscribe function
+ * Helper for authenticated fetch
+ */
+export const authFetch = async (url: string, options: RequestInit = {}) => {
+  const token = await getToken();
+  const headers = {
+    ...options.headers,
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+
+  const res = await fetch(url, { ...options, headers });
+  
+  if (res.status === 401) {
+    clearSession();
+    if (typeof window !== "undefined") {
+      window.location.href = "/login";
+    }
+  }
+  
+  return res;
+};
+
+/**
+ * Subscribe to auth changes (Stub for compatibility)
  */
 export function onAuthStateChange(
-    callback: (session: AuthSession | null) => void
+  callback: (session: AuthSession | null) => void
 ): () => void {
-    const client = initAuth();
-
-    if (!(client as any).$store?.atoms?.session?.subscribe) {
-        return () => { };
-    }
-
-    const unsubscribe = (client as any).$store.atoms.session.subscribe((val: any) => {
-        const rawData = val?.data;
-        if (!rawData?.user) {
-            callback(null);
-            return;
-        }
-        callback({
-            user: {
-                id: rawData.user.id,
-                email: rawData.user.email ?? '',
-                name: rawData.user.name ?? undefined,
-            },
-            token: rawData?.accessToken ?? rawData?.session?.token ?? rawData?.session?.accessToken ?? '',
-        });
-    });
-
-    return unsubscribe;
+  // Execute immediately with current state
+  getSession().then(callback);
+  return () => {};
 }

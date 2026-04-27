@@ -25,7 +25,9 @@ async def create_db_client() -> AsyncIOMotorClient:
     return client
 
 
-def get_db(client: AsyncIOMotorClient) -> AsyncIOMotorDatabase:
+from fastapi import Request
+
+def get_db_client_db(client: AsyncIOMotorClient) -> AsyncIOMotorDatabase:
     """Return the database instance from the client."""
     # Try to get default DB name from URI, fallback to 'pitchready'
     try:
@@ -35,11 +37,21 @@ def get_db(client: AsyncIOMotorClient) -> AsyncIOMotorDatabase:
     return client[db_name]
 
 
+def get_db(request: Request) -> AsyncIOMotorDatabase:
+    """FastAPI dependency to get the DB from app state."""
+    return request.app.state.db
+
+
 async def init_db(db: AsyncIOMotorDatabase) -> None:
     """Initialize collections and create necessary indexes."""
     # 1. Users collection
+    # Drop legacy neon index if it exists (prevents DuplicateKeyError for nulls)
+    try:
+        await db.users.drop_index("neon_user_id_1")
+    except Exception:
+        pass
+
     await db.users.create_indexes([
-        IndexModel([("neon_user_id", ASCENDING)], unique=True),
         IndexModel([("email", ASCENDING)], unique=True),
     ])
 
@@ -62,42 +74,55 @@ async def init_db(db: AsyncIOMotorDatabase) -> None:
 # Query helpers — users
 # ---------------------------------------------------------------------------
 
-async def get_user_by_neon_id(
+async def get_user_by_email(
     db: AsyncIOMotorDatabase,
-    neon_user_id: str,
+    email: str,
 ) -> Optional[dict]:
-    """Return the user document for *neon_user_id*, or None if not found."""
-    user = await db.users.find_one({"neon_user_id": neon_user_id})
+    """Return the user document for *email*, or None if not found."""
+    user = await db.users.find_one({"email": email.lower()})
     return user
 
 
 async def create_user(
     db: AsyncIOMotorDatabase,
-    neon_user_id: str,
     email: str,
+    hashed_password: str,
 ) -> dict:
-    """Upsert a user document and return it."""
+    """Create a new user document and return it."""
     now = datetime.datetime.now(datetime.timezone.utc)
-    user = await db.users.find_one_and_update(
-        {"neon_user_id": neon_user_id},
-        {
-            "$set": {
-                "email": email,
-                "last_active": now,
-            },
-            "$setOnInsert": {
-                "_id": str(uuid.uuid4()),
-                "neon_user_id": neon_user_id,
-                "plan": "free",
-                "runs_used": 0,
-                "runs_limit": 3,
-                "created_at": now,
-            }
-        },
-        upsert=True,
+    user_id = str(uuid.uuid4())
+    doc = {
+        "_id": user_id,
+        "email": email.lower(),
+        "hashed_password": hashed_password,
+        "plan": "free",
+        "runs_used": 0,
+        "runs_limit": 3,
+        "skeptic_level": "high",
+        "focus_area": "general",
+        "created_at": now,
+        "last_active": now,
+    }
+    await db.users.insert_one(doc)
+    return doc
+
+
+async def update_user_preferences(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+    skeptic_level: str,
+    focus_area: str,
+) -> Optional[dict]:
+    """Update a user's intelligence profile preferences."""
+    result = await db.users.find_one_and_update(
+        {"_id": user_id},
+        {"$set": {
+            "skeptic_level": skeptic_level,
+            "focus_area": focus_area
+        }},
         return_document=True
     )
-    return user
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -109,12 +134,13 @@ async def create_run(
     user_id: str | uuid.UUID,
     vertical: str,
     storage_object_key: str,
+    run_id: Optional[str | uuid.UUID] = None,
 ) -> dict:
     """Insert a new analysis_run with status='queued' and return it."""
     now = datetime.datetime.now(datetime.timezone.utc)
-    run_id = str(uuid.uuid4())
+    actual_run_id = str(run_id) if run_id else str(uuid.uuid4())
     doc = {
-        "_id": run_id,
+        "_id": actual_run_id,
         "user_id": str(user_id),
         "vertical": vertical,
         "storage_object_key": storage_object_key,

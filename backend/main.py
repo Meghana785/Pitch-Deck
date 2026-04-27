@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 # Load root .env (one level up from backend/) so all env vars are available
 # whether uvicorn is launched from backend/ or the project root.
 _root_env = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(dotenv_path=_root_env, override=False)
+load_dotenv(dotenv_path=_root_env, override=True)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,13 +14,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from routers import analyze, reports, upload, jobs, admin, auth
 from middleware.auth import JWTAuthMiddleware
-from db.models import create_db_client, get_db, init_db
+from db.models import create_db_client, get_db_client_db, init_db
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize MongoDB client
     client = await create_db_client()
-    db = get_db(client)
+    db = get_db_client_db(client)
     await init_db(db)
     app.state.db_client = client
     app.state.db = db

@@ -7,14 +7,18 @@ import { ReportHeader } from '@/components/report/ReportHeader';
 import { AssumptionMap, type Assumption } from '@/components/report/AssumptionMap';
 import { BlindSpotReport, type BlindSpot } from '@/components/report/BlindSpotReport';
 import { SharpeningPrompts, type SharpeningAction } from '@/components/report/SharpeningPrompts';
+import { DetailedAnalysis } from '@/components/report/DetailedAnalysis';
+import { HardQuestions, type HardQuestion } from '@/components/report/HardQuestions';
 import { getReport } from '@/lib/api';
 
 interface ReportData {
     id: string;
     vertical: string;
-    created_at?: string; // We'll mock if API misses it, or assume backend includes it implicitly
+    created_at?: string;
+    detailed_analysis: string;
     assumption_map: Assumption[];
     blind_spots: BlindSpot[];
+    hard_questions: HardQuestion[];
     sharpening: SharpeningAction[];
 }
 
@@ -38,8 +42,11 @@ export default function ReportPage() {
                     setReport({
                         id: data.id,
                         vertical: data.vertical,
+                        created_at: data.created_at,
+                        detailed_analysis: data.detailed_analysis || '',
                         assumption_map: data.assumption_map as Assumption[],
                         blind_spots: data.blind_spots as BlindSpot[],
+                        hard_questions: data.hard_questions as HardQuestion[],
                         sharpening: data.sharpening as SharpeningAction[],
                     });
                     setLoading(false);
@@ -60,10 +67,10 @@ export default function ReportPage() {
     if (loading) {
         return (
             <ProtectedRoute>
-                <div className="min-h-svh bg-brand-black flex flex-col items-center justify-center gap-6 selection:bg-brand-red/30">
-                    <div className="w-64 h-8 bg-zinc-900 rounded-sm animate-pulse" />
-                    <div className="w-96 h-32 bg-zinc-900 rounded-luxury animate-pulse delay-75" />
-                    <div className="w-96 h-32 bg-zinc-900 rounded-luxury animate-pulse delay-150" />
+                <div className="min-h-svh bg-white dark:bg-brand-black flex flex-col items-center justify-center gap-6 selection:bg-brand-red/30 transition-colors duration-300">
+                    <div className="w-64 h-8 bg-zinc-100 dark:bg-zinc-900 rounded-sm animate-pulse" />
+                    <div className="w-96 h-32 bg-zinc-100 dark:bg-zinc-900 rounded-sm animate-pulse delay-75" />
+                    <div className="w-96 h-32 bg-zinc-100 dark:bg-zinc-900 rounded-sm animate-pulse delay-150" />
                 </div>
             </ProtectedRoute>
         );
@@ -72,16 +79,16 @@ export default function ReportPage() {
     if (error || !report) {
         return (
             <ProtectedRoute>
-                <div className="min-h-svh bg-brand-black flex flex-col items-center justify-center px-4 selection:bg-brand-red/30">
-                    <div className="text-center bg-zinc-950 p-10 rounded-luxury border border-brand-red shadow-2xl max-w-sm relative overflow-hidden">
+                <div className="min-h-svh bg-white dark:bg-brand-black flex flex-col items-center justify-center px-4 selection:bg-brand-red/30 transition-colors duration-300">
+                    <div className="text-center bg-white dark:bg-zinc-950 p-10 rounded-sm border border-brand-red shadow-2xl max-w-sm relative overflow-hidden">
                         <div className="absolute top-0 left-0 w-full h-1 bg-brand-red" />
-                        <h2 className="text-2xl font-serif text-white mb-2 uppercase tracking-widest">Protocol Failed</h2>
-                        <p className="text-zinc-500 font-sans text-xs uppercase tracking-widest mb-8">{error || 'This transmission may have been deleted.'}</p>
+                        <h2 className="text-2xl font-serif text-zinc-900 dark:text-white mb-2 uppercase tracking-widest">Report Not Found</h2>
+                        <p className="text-zinc-500 dark:text-zinc-500 font-sans text-xs uppercase tracking-widest mb-8">{error || 'The analysis report you are looking for is missing or deleted.'}</p>
                         <button
                             onClick={() => router.push('/dashboard')}
-                            className="px-6 py-4 bg-white hover:bg-zinc-300 text-black font-sans font-bold text-xs uppercase tracking-widest rounded-luxury shadow-[0_0_20px_rgba(255,255,255,0.1)] transition-colors w-full"
+                            className="px-6 py-4 bg-zinc-900 dark:bg-white hover:bg-brand-red dark:hover:bg-zinc-300 text-white dark:text-black font-sans font-bold text-xs uppercase tracking-widest rounded-sm shadow-sm transition-colors w-full"
                         >
-                            Return to Base
+                            Back to Dashboard
                         </button>
                     </div>
                 </div>
@@ -91,32 +98,22 @@ export default function ReportPage() {
 
     return (
         <ProtectedRoute>
-            <div className="min-h-svh bg-brand-black flex flex-col items-center text-zinc-100 selection:bg-brand-red/30">
+            <div className="min-h-svh bg-white dark:bg-brand-black flex flex-col items-center text-zinc-900 dark:text-zinc-100 selection:bg-brand-red/30 transition-colors duration-300">
                 <div className="w-full max-w-5xl px-6 sm:px-8 flex flex-col pb-32">
-
-                    <div className="pt-8 pb-4 sticky top-0 z-[60] bg-brand-black">
-                        <button
-                            onClick={() => router.push('/dashboard')}
-                            className="group flex items-center gap-3 text-xs font-sans font-bold uppercase tracking-widest text-zinc-500 hover:text-brand-red transition-colors w-fit border-b border-transparent hover:border-brand-red pb-1"
-                        >
-                            <svg className="w-4 h-4 text-zinc-500 group-hover:-translate-x-1 group-hover:text-brand-red transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-                            </svg>
-                            Back to Command
-                        </button>
-                    </div>
 
                     <ReportHeader
                         vertical={report.vertical}
-                        createdAt={report.created_at || new Date().toISOString()} // Fallback if API doesn't return created_at
+                        createdAt={report.created_at || new Date().toISOString()}
                         assumptionCount={report.assumption_map?.length || 0}
                         blindSpotCount={report.blind_spots?.length || 0}
                         actionItemCount={report.sharpening?.length || 0}
                     />
 
-                    <main className="flex flex-col gap-20 pt-10">
+                    <main className="flex flex-col gap-32 pt-20">
+                        <DetailedAnalysis content={report.detailed_analysis} />
                         <AssumptionMap assumptions={report.assumption_map || []} />
                         <BlindSpotReport blindSpots={report.blind_spots || []} />
+                        <HardQuestions questions={report.hard_questions || []} />
                         <SharpeningPrompts reportId={report.id} prompts={report.sharpening || []} />
                     </main>
 

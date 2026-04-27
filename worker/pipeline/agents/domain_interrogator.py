@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from utils.json_cleaner import clean_and_parse_json
 import os
 import time
 
@@ -23,7 +24,7 @@ from pipeline.state import PipelineState
 logger = logging.getLogger(__name__)
 
 _MODEL_NAME = "gemini-flash-latest"
-_MAX_TOKENS = 2048
+_MAX_TOKENS = 4096
 
 # Where vertical KB markdown files live (relative to this repo's worker dir)
 _VERTICALS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "verticals")
@@ -77,11 +78,20 @@ async def run_domain_interrogator(state: PipelineState) -> PipelineState:
     """
     vertical = state["vertical"]
     vertical_kb = _load_vertical_kb(vertical)
+    skeptic_level = state.get("skeptic_level", "high")
+    
+    skeptic_instructions = {
+        "high": "Be extremely skeptical, adversarial, and uncompromising. Look for reasons why this business might fail. Do not hold back. Ask the questions that would make a founder sweat.",
+        "medium": "Be balanced and critical. Look for logical gaps and risks, but stay professional and objective. Focus on realistic market and execution challenges.",
+        "supportive": "Be helpful and constructive. Identify areas where the founder can strengthen their argument, but frame your questions as opportunities for improvement rather than fatal flaws."
+    }
+    
+    current_skeptic_instruction = skeptic_instructions.get(skeptic_level, skeptic_instructions["high"])
 
     system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
         vertical=vertical,
         vertical_kb_content=vertical_kb,
-    )
+    ) + f"\n\nTONE AND APPROACH: {current_skeptic_instruction}"
 
     user_content = json.dumps(
         {
@@ -115,10 +125,10 @@ async def run_domain_interrogator(state: PipelineState) -> PipelineState:
     raw_content = response.text
 
     try:
-        hard_questions = json.loads(raw_content)
+        hard_questions = clean_and_parse_json(raw_content)
         if not isinstance(hard_questions, list):
             raise ValueError("Expected a JSON array")
-    except (json.JSONDecodeError, ValueError) as exc:
+    except Exception as exc:
         raise ValueError(
             f"[domain_interrogator] JSON parse failed: {exc}\nRaw: {raw_content[:300]}"
         ) from exc

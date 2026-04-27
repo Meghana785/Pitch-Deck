@@ -59,6 +59,8 @@ function initPostHog() {
     _posthogInitialized = true;
 }
 
+import { ThemeProvider } from '@/components/theme-provider';
+
 // ---------------------------------------------------------------------------
 // Providers component
 // ---------------------------------------------------------------------------
@@ -84,7 +86,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
     return (
         <PostHogProvider client={posthog}>
             <QueryClientProvider client={queryClient}>
-                {children}
+                <ThemeProvider attribute="class" defaultTheme="light" enableSystem={true} disableTransitionOnChange>
+                    {children}
+                </ThemeProvider>
             </QueryClientProvider>
         </PostHogProvider>
     );

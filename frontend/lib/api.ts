@@ -93,11 +93,9 @@ apiClient.interceptors.response.use(
 // Response types
 // ---------------------------------------------------------------------------
 
-export interface PresignResponse {
-    presigned_url: string;
+export interface UploadFileResponse {
     object_key: string;
     run_id: string;
-    expires_in: number;
 }
 
 export interface AnalysisResponse {
@@ -136,31 +134,40 @@ export interface AdminStats {
 // ---------------------------------------------------------------------------
 
 /**
- * Request a presigned S3 URL for direct-to-Spaces pitch upload.
+ * Upload a pitch file directly to the backend (which proxies it to R2).
+ * Returns object_key and run_id without needing a presigned URL.
  */
-export async function uploadPresign(
-    filename: string,
-    contentType: string,
-    vertical: string
-): Promise<PresignResponse> {
-    const { data } = await apiClient.post<PresignResponse>('/upload/presign', {
-        filename,
-        content_type: contentType,
-        vertical,
+export async function uploadFile(
+    file: File,
+): Promise<UploadFileResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('vertical', 'auto');
+
+    const token = await getToken();
+    const baseURL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    const res = await fetch(`${baseURL}/upload/file`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
     });
-    return data;
+
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw { status: res.status, message: data.detail || 'Upload failed' };
+    }
+
+    return res.json();
 }
 
 /**
- * Submit a pitch for analysis after the file has been uploaded to Spaces.
+ * Submit a pitch for analysis after the file has been uploaded.
  */
 export async function submitAnalysis(
     object_key: string,
-    vertical: string
 ): Promise<AnalysisResponse> {
     const { data } = await apiClient.post<AnalysisResponse>('/analyze', {
         object_key,
-        vertical,
     });
     return data;
 }
@@ -182,9 +189,29 @@ export async function getReports(): Promise<ReportSummary[]> {
 }
 
 /**
+ * Delete a report/run history item.
+ */
+export async function deleteReport(runId: string): Promise<void> {
+    await apiClient.delete(`/reports/${runId}`);
+}
+
+/**
  * Fetch platform-wide statistics (admin only).
  */
 export async function getAdminStats(): Promise<AdminStats> {
     const { data } = await apiClient.get<AdminStats>('/admin/stats');
     return data;
+}
+
+/**
+ * Update user intelligence profile preferences.
+ */
+export async function updatePreferences(
+    skeptic_level: string,
+    focus_area: string,
+): Promise<void> {
+    await apiClient.patch('/auth/me/preferences', {
+        skeptic_level,
+        focus_area,
+    });
 }
