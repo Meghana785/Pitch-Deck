@@ -121,15 +121,15 @@ export function PipelineProgress({ runId, onComplete, onError, onTimeout }: Pipe
     }, [runId, onComplete, onError, onTimeout]);
 
     return (
-        <div className="w-full max-w-2xl mx-auto flex flex-col items-center mt-12">
+        <div className="w-full max-w-2xl mx-auto flex flex-col items-center mt-12 transition-colors duration-300">
             {/* Header Readout */}
-            <div className="w-full flex items-center justify-between mb-12 pb-4 border-b border-brand-gray relative">
+            <div className="w-full flex items-center justify-between mb-12 pb-4 border-b border-zinc-100 dark:border-brand-gray relative">
                 <div className="flex flex-col gap-1 text-left">
-                    <span className="text-[10px] font-sans font-bold uppercase tracking-[0.2em] text-zinc-500">Sequence active</span>
-                    <h2 className="text-xl font-serif text-white tracking-widest">ANALYSIS PROTOCOL</h2>
+                    <span className="text-[10px] font-sans font-bold uppercase tracking-[0.2em] text-zinc-400">Processing Sequence</span>
+                    <h2 className="text-xl font-serif text-zinc-900 dark:text-white tracking-widest uppercase">Processing Deck</h2>
                 </div>
                 <div className="flex items-center gap-3">
-                    <div className="w-1.5 h-1.5 bg-brand-red rounded-sm animate-pulse shadow-[0_0_10px_rgba(210,18,46,0.8)]" />
+                    <div className="w-1.5 h-1.5 bg-brand-red rounded-sm animate-pulse shadow-[0_0_10px_rgba(210,18,46,0.4)]" />
                     <span className="text-sm font-mono text-brand-red font-bold">
                         {Math.floor(elapsedSeconds / 60)}:{(elapsedSeconds % 60).toString().padStart(2, '0')}
                     </span>
@@ -139,7 +139,7 @@ export function PipelineProgress({ runId, onComplete, onError, onTimeout }: Pipe
             {/* Vertical Stepper */}
             <div className="w-full mb-16 space-y-8 relative">
                 {/* Master line */}
-                <div className="absolute top-4 left-[23px] w-px h-[calc(100%-2rem)] bg-zinc-900 z-0" />
+                <div className="absolute top-4 left-[23px] w-px h-[calc(100%-2rem)] bg-zinc-100 dark:bg-zinc-900 z-0" />
 
                 {STEPS.map((stepName, i) => {
                     const agentNum = i + 1;
@@ -150,11 +150,11 @@ export function PipelineProgress({ runId, onComplete, onError, onTimeout }: Pipe
                         <div key={agentNum} className="relative z-10 flex items-center gap-6 group">
                             {/* Terminal indicator box */}
                             <div
-                                className={`w-12 h-12 flex items-center justify-center border transition-colors duration-500 bg-brand-black ${isComplete
-                                    ? 'border-zinc-700 text-zinc-500'
+                                className={`w-12 h-12 flex items-center justify-center border transition-colors duration-500 bg-white dark:bg-brand-black rounded-sm ${isComplete
+                                    ? 'border-zinc-200 dark:border-zinc-700 text-zinc-400 dark:text-zinc-500'
                                     : isActive
-                                        ? 'border-brand-red text-brand-red shadow-[0_0_15px_rgba(210,18,46,0.2)]'
-                                        : 'border-zinc-900 text-zinc-800'
+                                        ? 'border-brand-red text-brand-red shadow-lg dark:shadow-[0_0_15px_rgba(210,18,46,0.2)]'
+                                        : 'border-zinc-100 dark:border-zinc-900 text-zinc-300 dark:text-zinc-800'
                                     }`}
                             >
                                 {isComplete ? (
@@ -172,22 +172,22 @@ export function PipelineProgress({ runId, onComplete, onError, onTimeout }: Pipe
                             <div className="flex flex-col">
                                 <span
                                     className={`text-sm font-sans uppercase tracking-widest transition-colors duration-500 ${isComplete
-                                        ? 'text-zinc-600'
+                                        ? 'text-zinc-400 dark:text-zinc-600'
                                         : isActive
-                                            ? 'text-white font-bold'
-                                            : 'text-zinc-800'
+                                            ? 'text-zinc-900 dark:text-white font-bold'
+                                            : 'text-zinc-300 dark:text-zinc-800'
                                         }`}
                                 >
                                     {stepName}
                                 </span>
                                 {isComplete && latencies[agentNum] && (
-                                    <span className="text-[10px] font-mono text-zinc-500 mt-1 uppercase">
-                                        Execution time: {(latencies[agentNum] / 1000).toFixed(2)}s
+                                    <span className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500 mt-1 uppercase">
+                                        Completed in: {(latencies[agentNum] / 1000).toFixed(2)}s
                                     </span>
                                 )}
                                 {isActive && (
                                     <span className="text-[10px] font-mono text-brand-red mt-1 uppercase animate-pulse">
-                                        Processing variables...
+                                        Running analysis...
                                     </span>
                                 )}
                             </div>
@@ -196,10 +196,10 @@ export function PipelineProgress({ runId, onComplete, onError, onTimeout }: Pipe
                 })}
             </div>
 
-            {/* Rotating Tip / Terminal Output Area */}
-            <div className="w-full p-6 border border-brand-gray bg-zinc-950 overflow-hidden relative">
-                <div className="absolute top-0 left-0 w-full h-1 bg-linear-to-r from-transparent via-brand-red/30 to-transparent opacity-50" />
-                <p key={tipIndex} className="text-xs font-mono uppercase text-zinc-400 tracking-wider animate-in fade-in slide-in-from-bottom-2 duration-500">
+            {/* Rotating Tip Area */}
+            <div className="w-full p-6 border border-zinc-100 dark:border-brand-gray bg-zinc-50 dark:bg-zinc-950 rounded-sm overflow-hidden relative shadow-sm dark:shadow-none">
+                <div className="absolute top-0 left-0 w-full h-px bg-gradient-to-r from-transparent via-brand-red/30 to-transparent opacity-50" />
+                <p key={tipIndex} className="text-xs font-mono uppercase text-zinc-500 dark:text-zinc-400 tracking-wider animate-in fade-in slide-in-from-bottom-2 duration-500">
                     <span className="text-brand-red mr-3 font-bold">{'>'}</span>
                     {ROTATING_TIPS[tipIndex]}
                 </p>

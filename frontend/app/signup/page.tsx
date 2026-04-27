@@ -11,24 +11,6 @@ import Link from 'next/link';
 
 type View = 'sign-in' | 'sign-up';
 
-// Route auth calls through the local Next.js /api/auth handler.
-// This proxies server-to-server to Neon Auth, avoids CORS, and sets cookies on localhost.
-async function callNeonAuth(path: string, body: object): Promise<{ error?: string }> {
-    try {
-        const res = await fetch(`/api/auth/${path}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify(body),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) return { error: data?.message || data?.error || `Error ${res.status}` };
-        return {};
-    } catch {
-        return { error: 'Connection failed. Please try again.' };
-    }
-}
-
 export default function SignupPage() {
     const router = useRouter();
     const [view, setView] = useState<View>('sign-up');
@@ -52,21 +34,37 @@ export default function SignupPage() {
         setError('');
         setLoading(true);
 
-        if (view === 'sign-in') {
-            const { error: err } = await callNeonAuth('sign-in/email', { email, password });
-            if (err) { setError(err); setLoading(false); return; }
-        } else {
-            const { error: err } = await callNeonAuth('sign-up/email', { email, password, name });
-            if (err) { setError(err); setLoading(false); return; }
-        }
+        try {
+            const endpoint = view === 'sign-in' ? '/auth/login' : '/auth/signup';
+            const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+            
+            const res = await fetch(`${backendUrl}${endpoint}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password }),
+            });
 
-        for (let i = 0; i < 10; i++) {
-            await new Promise(r => setTimeout(r, 300));
-            const s = await getSession();
-            if (s) { router.replace('/dashboard'); return; }
+            const data = await res.json();
+
+            if (!res.ok) {
+                setError(data.detail || 'Authentication failed');
+                setLoading(false);
+                return;
+            }
+
+            // Save session
+            const { setSession } = await import('@/lib/auth');
+            setSession(data.access_token, {
+                id: data.user.id,
+                email: data.user.email,
+                plan: data.user.plan
+            });
+
+            router.replace('/dashboard');
+        } catch (err) {
+            setError('Connection failed. Please ensure the backend is running.');
+            setLoading(false);
         }
-        setError('Session not found. Please try signing in.');
-        setLoading(false);
     };
 
     const inputStyle: React.CSSProperties = {
@@ -81,104 +79,110 @@ export default function SignupPage() {
     };
 
     return (
-        <main style={{ minHeight: '100svh', width: '100%', display: 'flex', backgroundColor: '#050505', fontFamily: "'Inter', sans-serif" }}>
+        <main className="min-h-svh w-full flex bg-white dark:bg-brand-black transition-colors duration-300 font-sans">
             {isDesktop && (
-                <div style={{ width: '65%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: '64px', borderRight: '1px solid #1a1a1a', position: 'relative', overflow: 'hidden', backgroundColor: '#050505' }}>
-                    <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(ellipse at 0% 100%, rgba(210,18,46,0.1), transparent 55%)', pointerEvents: 'none' }} />
-                    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', opacity: 0.25, backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 79px, #1a1a1a 79px, #1a1a1a 80px), repeating-linear-gradient(90deg, transparent, transparent 79px, #1a1a1a 80px)' }} />
-                    <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '100%', background: 'linear-gradient(to bottom, transparent, rgba(210,18,46,0.3), transparent)' }} />
+                <div className="w-[65%] flex flex-col justify-between p-16 border-r border-zinc-200 dark:border-white/5 relative overflow-hidden bg-zinc-50 dark:bg-brand-black">
+                    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_0%_100%,rgba(210,18,46,0.05),transparent_55%)] pointer-events-none" />
+                    <div className="absolute inset-0 pointer-events-none opacity-[0.03] dark:opacity-25 bg-[repeating-linear-gradient(0deg,transparent,transparent_79px,#1a1a1a_79px,#1a1a1a_80px),repeating-linear-gradient(90deg,transparent,transparent_79px,#1a1a1a_80px)]" />
 
-                    <div style={{ position: 'relative', zIndex: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <div style={{ width: 28, height: 28, backgroundColor: '#D2122E', borderRadius: 2, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                            <div style={{ width: 10, height: 10, backgroundColor: 'rgba(255,255,255,0.9)', borderRadius: 1 }} />
+                    <div className="relative z-10 flex items-center gap-3">
+                        <div className="w-7 h-7 bg-brand-red rounded-sm flex items-center justify-center">
+                            <div className="w-2.5 h-2.5 bg-white/90 rounded-xs" />
                         </div>
-                        <span style={{ fontFamily: "'Playfair Display', serif", fontSize: 18, fontWeight: 700, color: '#fff', letterSpacing: '0.25em', textTransform: 'uppercase' }}>PitchReady.</span>
+                        <span className="font-serif text-lg font-bold text-zinc-900 dark:text-white tracking-[0.25em] uppercase">PitchReady.</span>
                     </div>
 
-                    <div style={{ position: 'relative', zIndex: 10, maxWidth: 520 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 40 }}>
-                            <div style={{ width: 28, height: 1, backgroundColor: '#D2122E' }} />
-                            <span style={{ fontSize: 10, fontWeight: 700, color: '#52525b', letterSpacing: '0.3em', textTransform: 'uppercase' }}>Investor Intelligence Platform</span>
+                    <div className="relative z-10 max-w-[520px]">
+                        <div className="flex items-center gap-3 mb-10">
+                            <div className="w-7 h-px bg-brand-red" />
+                            <span className="text-[10px] font-bold text-zinc-500 dark:text-zinc-500 tracking-[0.3em] uppercase">Pitch Analysis Platform</span>
                         </div>
-                        <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: 'clamp(68px, 8vw, 104px)', lineHeight: 0.88, letterSpacing: '-0.03em', color: '#fff', margin: '0 0 36px 0' }}>
-                            YOUR<br /><span style={{ color: '#D2122E', fontStyle: 'italic' }}>EDGE</span><br />STARTS<br />HERE.
+                        <h1 className="font-serif text-[clamp(68px,8vw,104px)] leading-[0.88] tracking-tighter text-zinc-900 dark:text-white mb-9">
+                            YOUR<br /><span className="text-brand-red italic">EDGE</span><br />STARTS<br />HERE.
                         </h1>
-                        <p style={{ color: '#52525b', fontSize: 16, lineHeight: 1.7, borderLeft: '2px solid #D2122E', paddingLeft: 20, margin: 0, fontWeight: 300, maxWidth: 400 }}>
-                            Join elite founders who use PitchReady to deconstruct their strategy and craft investment-grade memos in under 4 minutes.
+                        <p className="text-zinc-600 dark:text-zinc-500 text-base leading-relaxed border-l-2 border-brand-red pl-5 font-light max-w-[400px]">
+                            Join founders who use PitchReady to analyze their strategy and craft investment-grade decks in under 4 minutes.
                         </p>
-                        <div style={{ display: 'flex', gap: 48, marginTop: 56 }}>
-                            {[{ num: '97%', label: 'Accuracy' }, { num: '< 4m', label: 'Time to Memo' }, { num: '∞', label: 'Verticals' }].map(({ num, label }) => (
+                        <div className="flex gap-12 mt-14">
+                            {[{ num: '97%', label: 'Accuracy' }, { num: '< 4m', label: 'Analysis Time' }, { num: '∞', label: 'Industries' }].map(({ num, label }) => (
                                 <div key={label}>
-                                    <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 24, fontWeight: 700, color: '#fff', marginBottom: 4 }}>{num}</div>
-                                    <div style={{ fontSize: 10, color: '#3f3f46', textTransform: 'uppercase', letterSpacing: '0.2em' }}>{label}</div>
+                                    <div className="font-serif text-2xl font-bold text-zinc-900 dark:text-white mb-1">{num}</div>
+                                    <div className="text-[10px] text-zinc-400 dark:text-zinc-600 uppercase tracking-widest">{label}</div>
                                 </div>
                             ))}
                         </div>
                     </div>
 
-                    <div style={{ position: 'relative', zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: 10, color: '#292929', textTransform: 'uppercase', letterSpacing: '0.25em', fontFamily: 'monospace' }}>System v2.4.1 • Orbital Routing Active</span>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#22c55e' }} />
-                            <span style={{ fontSize: 10, color: '#3f3f46', textTransform: 'uppercase', letterSpacing: '0.2em', fontFamily: 'monospace' }}>Live</span>
+                    <div className="relative z-10 flex justify-between items-center">
+                        <span className="text-[10px] text-zinc-400 dark:text-zinc-800 uppercase tracking-widest font-mono">Version 2.4.1</span>
+                        <div className="flex items-center gap-1.5">
+                            <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                            <span className="text-[10px] text-zinc-500 dark:text-zinc-600 uppercase tracking-widest font-mono">System Live</span>
                         </div>
                     </div>
                 </div>
             )}
 
-            <div style={{ width: isDesktop ? '35%' : '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: isDesktop ? '64px 48px' : '48px 24px', backgroundColor: '#070707', position: 'relative' }}>
-                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 1, background: 'linear-gradient(to right, transparent, rgba(210,18,46,0.5), transparent)' }} />
-                <div style={{ width: '100%', maxWidth: 340 }}>
+            <div className={`flex flex-col justify-center items-center bg-white dark:bg-[#070707] relative transition-colors duration-300 ${isDesktop ? 'w-[35%]' : 'w-full'} ${isDesktop ? 'px-12 py-16' : 'px-6 py-12'}`}>
+                <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-brand-red/50 to-transparent" />
+                <div className="w-full max-w-[340px]">
                     {!isDesktop && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 48, justifyContent: 'center' }}>
-                            <div style={{ width: 22, height: 22, backgroundColor: '#D2122E', borderRadius: 2 }} />
-                            <span style={{ fontFamily: "'Playfair Display', serif", fontSize: 18, fontWeight: 700, color: '#fff', letterSpacing: '0.25em', textTransform: 'uppercase' }}>PitchReady.</span>
+                        <div className="flex items-center gap-2 mb-12 justify-center">
+                            <div className="w-5.5 h-5.5 bg-brand-red rounded-sm" />
+                            <span className="font-serif text-lg font-bold text-zinc-900 dark:text-white tracking-[0.25em] uppercase">PitchReady.</span>
                         </div>
                     )}
-                    <div style={{ marginBottom: 28 }}>
-                        <p style={{ fontSize: 10, color: '#3f3f46', textTransform: 'uppercase', letterSpacing: '0.3em', fontWeight: 700, margin: '0 0 10px 0' }}>{view === 'sign-in' ? 'Access Portal' : 'Create Account'}</p>
-                        <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 30, fontWeight: 700, color: '#fff', margin: 0, letterSpacing: '-0.01em' }}>{view === 'sign-in' ? 'Welcome Back.' : 'Get Started.'}</h2>
+                    <div className="mb-7">
+                        <p className="text-[10px] text-zinc-500 dark:text-zinc-600 uppercase tracking-[0.3em] font-bold mb-2.5">{view === 'sign-in' ? 'Sign In' : 'Create Account'}</p>
+                        <h2 className="font-serif text-3xl font-bold text-zinc-900 dark:text-white tracking-tight">{view === 'sign-in' ? 'Welcome Back.' : 'Get Started.'}</h2>
                     </div>
-                    <div style={{ display: 'flex', border: '1px solid #1a1a1a', borderRadius: 2, marginBottom: 28, overflow: 'hidden' }}>
+                    <div className="flex border border-zinc-200 dark:border-white/5 rounded-sm mb-7 overflow-hidden">
                         {(['sign-in', 'sign-up'] as View[]).map((v, i) => (
-                            <button key={v} onClick={() => { setView(v); setError(''); }} style={{ flex: 1, padding: 12, fontSize: 10, fontWeight: 700, letterSpacing: '0.2em', textTransform: 'uppercase', border: 'none', borderLeft: i > 0 ? '1px solid #1a1a1a' : 'none', cursor: 'pointer', fontFamily: "'Inter', sans-serif", backgroundColor: view === v ? '#D2122E' : 'transparent', color: view === v ? '#fff' : '#52525b', transition: 'all 0.15s ease' }}>
+                            <button 
+                                key={v} 
+                                onClick={() => { setView(v); setError(''); }} 
+                                className={`flex-1 py-3 text-[10px] font-bold tracking-widest uppercase cursor-pointer transition-all duration-200 ${i > 0 ? 'border-l border-zinc-200 dark:border-white/5' : ''} ${view === v ? 'bg-brand-red text-white' : 'text-zinc-500 dark:text-zinc-600 bg-transparent hover:text-zinc-900 dark:hover:text-white'}`}
+                            >
                                 {v === 'sign-in' ? 'Sign In' : 'Sign Up'}
                             </button>
                         ))}
                     </div>
-                    <div style={{ border: '1px solid #1a1a1a', borderRadius: 2, padding: 28, backgroundColor: '#050505', position: 'relative' }}>
-                        <div style={{ position: 'absolute', top: 0, right: 0, width: 56, height: 56, borderTop: '1px solid rgba(210,18,46,0.25)', borderRight: '1px solid rgba(210,18,46,0.25)', pointerEvents: 'none' }} />
+                    <div className="border border-zinc-200 dark:border-white/5 rounded-sm p-7 bg-zinc-50 dark:bg-[#050505] relative shadow-sm dark:shadow-none">
+                        <div className="absolute top-0 right-0 w-14 h-14 border-t border-r border-brand-red/10 dark:border-brand-red/25 pointer-events-none" />
                         {error && (
-                            <div style={{ background: 'rgba(210,18,46,0.06)', border: '1px solid #D2122E', borderRadius: 2, color: '#D2122E', fontSize: 11, padding: '10px 12px', marginBottom: 20 }}>{error}</div>
+                            <div className="bg-brand-red/5 border border-brand-red rounded-sm text-brand-red text-[11px] p-3 mb-5">{error}</div>
                         )}
-                        <form onSubmit={handleSubmit}>
+                        <form onSubmit={handleSubmit} className="flex flex-col gap-4.5">
                             {view === 'sign-up' && (
-                                <div style={{ marginBottom: 18 }}>
-                                    <label style={labelStyle}>Full Name</label>
-                                    <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Jane Smith" required style={inputStyle} onFocus={e => (e.target.style.borderColor = '#D2122E')} onBlur={e => (e.target.style.borderColor = '#1c1c1c')} />
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="text-[10px] font-bold tracking-widest uppercase text-zinc-500 dark:text-zinc-600">Full Name</label>
+                                    <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Jane Smith" required className="w-full bg-white dark:bg-[#0a0a0a] border border-zinc-200 dark:border-[#1c1c1c] rounded-sm text-zinc-900 dark:text-zinc-200 text-sm px-3.5 py-2.5 outline-none focus:border-brand-red transition-all placeholder:text-zinc-400 dark:placeholder:text-zinc-700" />
                                 </div>
                             )}
-                            <div style={{ marginBottom: 18 }}>
-                                <label style={labelStyle}>Email</label>
-                                <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="jane@fund.com" required style={inputStyle} onFocus={e => (e.target.style.borderColor = '#D2122E')} onBlur={e => (e.target.style.borderColor = '#1c1c1c')} />
+                            <div className="flex flex-col gap-1.5">
+                                <label className="text-[10px] font-bold tracking-widest uppercase text-zinc-500 dark:text-zinc-600">Email</label>
+                                <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="jane@example.com" required className="w-full bg-white dark:bg-[#0a0a0a] border border-zinc-200 dark:border-[#1c1c1c] rounded-sm text-zinc-900 dark:text-zinc-200 text-sm px-3.5 py-2.5 outline-none focus:border-brand-red transition-all placeholder:text-zinc-400 dark:placeholder:text-zinc-700" />
                             </div>
-                            <div style={{ marginBottom: 8 }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                                    <label style={{ ...labelStyle, margin: 0 }}>Password</label>
-                                    {view === 'sign-in' && <span style={{ fontSize: 10, color: '#52525b', cursor: 'pointer' }}>Forgot password?</span>}
+                            <div className="flex flex-col gap-1.5">
+                                <div className="flex justify-between items-center mb-0.5">
+                                    <label className="text-[10px] font-bold tracking-widest uppercase text-zinc-500 dark:text-zinc-600">Password</label>
+                                    {view === 'sign-in' && <button type="button" className="text-[10px] text-zinc-400 dark:text-zinc-600 hover:text-brand-red transition-colors">Forgot password?</button>}
                                 </div>
-                                <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" required style={inputStyle} onFocus={e => (e.target.style.borderColor = '#D2122E')} onBlur={e => (e.target.style.borderColor = '#1c1c1c')} />
+                                <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" required className="w-full bg-white dark:bg-[#0a0a0a] border border-zinc-200 dark:border-[#1c1c1c] rounded-sm text-zinc-900 dark:text-zinc-200 text-sm px-3.5 py-2.5 outline-none focus:border-brand-red transition-all placeholder:text-zinc-400 dark:placeholder:text-zinc-700" />
                             </div>
-                            <button type="submit" disabled={loading} style={{ width: '100%', marginTop: 20, background: loading ? '#8A0303' : '#D2122E', color: '#fff', border: 'none', borderRadius: 2, fontFamily: "'Inter', sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: '0.2em', textTransform: 'uppercase', padding: 14, cursor: loading ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-                                {loading ? (<><div style={{ width: 12, height: 12, border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />Processing...</>) : (view === 'sign-in' ? 'Access System' : 'Create Account')}
+                            <button
+                                type="submit"
+                                disabled={loading}
+                                className={`w-full mt-5 bg-brand-red text-white py-3.5 rounded-sm text-[10px] font-bold tracking-[0.2em] uppercase transition-all flex items-center justify-center gap-2 ${loading ? 'opacity-70 cursor-not-allowed' : 'hover:bg-zinc-900 dark:hover:bg-white dark:hover:text-black shadow-lg dark:shadow-none'}`}
+                            >
+                                {loading ? (<><div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />Processing...</>) : (view === 'sign-in' ? 'Sign In' : 'Create Account')}
                             </button>
                         </form>
-                        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
                     </div>
-                    <div style={{ marginTop: 24, display: 'flex', alignItems: 'center', gap: 12 }}>
-                        <div style={{ flex: 1, height: 1, backgroundColor: '#141414' }} />
-                        <Link href="/" style={{ fontSize: 10, color: '#3f3f46', textTransform: 'uppercase', letterSpacing: '0.2em', fontWeight: 700, textDecoration: 'none' }} onMouseOver={e => (e.currentTarget.style.color = '#D2122E')} onMouseOut={e => (e.currentTarget.style.color = '#3f3f46')}>Return to Origin</Link>
-                        <div style={{ flex: 1, height: 1, backgroundColor: '#141414' }} />
+                    <div className="mt-6 flex items-center gap-3">
+                        <div className="flex-1 h-px bg-zinc-100 dark:bg-[#141414]" />
+                        <Link href="/" className="text-[10px] text-zinc-400 dark:text-zinc-600 uppercase tracking-widest font-bold no-underline hover:text-brand-red transition-colors">Return Home</Link>
+                        <div className="flex-1 h-px bg-zinc-100 dark:bg-[#141414]" />
                     </div>
                 </div>
             </div>

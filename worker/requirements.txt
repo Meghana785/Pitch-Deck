@@ -3,7 +3,11 @@ langgraph
 langchain-anthropic
 anthropic
 asyncpg
-upstash-redis
 boto3
 pymupdf
 python-pptx
+motor
+pymongo
+google-generativeai
+python-dotenv
+httpx

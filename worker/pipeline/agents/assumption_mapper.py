@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import time
+from utils.json_cleaner import clean_and_parse_json
 
 import google.generativeai as genai
 import os
@@ -20,7 +21,7 @@ from pipeline.state import PipelineState
 logger = logging.getLogger(__name__)
 
 _MODEL_NAME = "gemini-flash-latest"
-_MAX_TOKENS = 2048
+_MAX_TOKENS = 4096
 
 _SYSTEM_PROMPT = """\
 You are a critical analyst reviewing startup pitches.
@@ -38,9 +39,20 @@ async def run_assumption_mapper(state: PipelineState) -> PipelineState:
     Agent 2: Map unproven / risky assumptions from the structured pitch using Gemini.
     """
     genai.configure(api_key=os.environ["GEMINI_API"])
+    focus_area = state.get("focus_area", "general")
+    
+    focus_instructions = {
+        "general": "Identify a broad range of assumptions across market, tech, and finance.",
+        "technical": "Prioritize technical assumptions, product scalability claims, and IP-related risks.",
+        "financial": "Prioritize unit economic claims, revenue growth projections, and burn rate assumptions.",
+        "market": "Prioritize TAM/SAM claims, customer acquisition velocity assumptions, and competitive moats."
+    }
+    
+    current_focus_instruction = focus_instructions.get(focus_area, focus_instructions["general"])
+
     model = genai.GenerativeModel(
         model_name=_MODEL_NAME,
-        system_instruction=_SYSTEM_PROMPT
+        system_instruction=_SYSTEM_PROMPT + f"\n\nFOCUS GUIDANCE: {current_focus_instruction}"
     )
     
     user_content = json.dumps(state["structured"], ensure_ascii=False)
@@ -62,10 +74,10 @@ async def run_assumption_mapper(state: PipelineState) -> PipelineState:
     raw_content = response.text
 
     try:
-        assumptions = json.loads(raw_content)
+        assumptions = clean_and_parse_json(raw_content)
         if not isinstance(assumptions, list):
             raise ValueError("Expected a JSON array")
-    except (json.JSONDecodeError, ValueError) as exc:
+    except Exception as exc:
         raise ValueError(
             f"[assumption_mapper] JSON parse failed: {exc}\nRaw: {raw_content[:300]}"
         ) from exc

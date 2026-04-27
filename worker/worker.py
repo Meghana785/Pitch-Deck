@@ -14,6 +14,13 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load root .env
+_root_env = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=_root_env, override=True)
+
 import signal
 import traceback
 import uuid
@@ -23,7 +30,6 @@ from typing import Any
 
 import datetime
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from upstash_redis.asyncio import Redis
 
 from pipeline.graph import pipeline
 from pipeline.state import PipelineState
@@ -44,9 +50,8 @@ logger = logging.getLogger("pitchready.worker")
 # Constants
 # ---------------------------------------------------------------------------
 
-QUEUE_KEY = "pitchready:jobs"
-PROGRESS_KEY_PREFIX = "pitchready:progress:"
-PROGRESS_TTL = 3600  # 1 hour
+# Polling interval for MongoDB jobs
+POLL_INTERVAL = 2.0  # 2 seconds
 
 # Map LangGraph node names → agent numbers
 _NODE_TO_AGENT: dict[str, int] = {
@@ -65,13 +70,7 @@ _OUTPUT_PRICE_PER_M = 15.0
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _get_redis() -> Redis:
-    """Initialise Upstash Redis client from environment variables."""
-    url   = os.environ.get("UPSTASH_REDIS_URL") or os.environ.get("UPSTASH_REDIS_REST_URL")
-    token = os.environ.get("UPSTASH_REDIS_TOKEN") or os.environ.get("UPSTASH_REDIS_REST_TOKEN")
-    if not url or not token:
-        raise ValueError("Upstash Redis credentials missing (UPSTASH_REDIS_URL / UPSTASH_REDIS_TOKEN)")
-    return Redis(url=url, token=token)
+
 
 
 def _load_verticals() -> dict[str, str]:
@@ -93,16 +92,20 @@ def _load_verticals() -> dict[str, str]:
 
 
 async def _publish_progress(
-    redis: Redis, run_id: str, payload: dict[str, Any]
+    db: AsyncIOMotorDatabase, run_id: str, payload: dict[str, Any]
 ) -> None:
-    """Store a progress event in Redis under the run's progress key (1 h TTL)."""
-    key = f"{PROGRESS_KEY_PREFIX}{run_id}"
-    await redis.setex(name=key, time=PROGRESS_TTL, value=json.dumps(payload))
+    """Store a progress event in MongoDB under the analysis_run document."""
+    try:
+        await db.analysis_runs.update_one(
+            {"_id": run_id},
+            {"$set": {"last_event": payload}}
+        )
+    except Exception as exc:
+        logger.error("Could not update progress for run %s in DB: %s", run_id, exc)
 
 
 async def _mark_failed(
     db: AsyncIOMotorDatabase,
-    redis: Redis,
     run_id: str,
     error_message: str,
 ) -> None:
@@ -111,22 +114,20 @@ async def _mark_failed(
     """
     try:
         now = datetime.datetime.now(datetime.timezone.utc)
+        payload = {"event": "failed", "message": error_message}
         await db.analysis_runs.update_one(
             {"_id": run_id},
             {
                 "$set": {
                     "status": "failed",
                     "error_message": error_message[:2000],
-                    "completed_at": now
+                    "completed_at": now,
+                    "last_event": payload
                 }
             }
         )
     except Exception as db_exc:
         logger.error("Could not mark run %s failed in DB: %s", run_id, db_exc)
-
-    await _publish_progress(
-        redis, run_id, {"event": "failed", "message": error_message}
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +137,6 @@ async def _mark_failed(
 async def _process_job(
     payload: dict[str, Any],
     db: AsyncIOMotorDatabase,
-    redis: Redis,
 ) -> None:
     """
     Execute a single analysis job end-to-end:
@@ -156,7 +156,7 @@ async def _process_job(
     )
 
     await _publish_progress(
-        redis, run_id,
+        db, run_id,
         {"event": "started", "agent": 0, "message": "Pipeline started"},
     )
 
@@ -167,7 +167,7 @@ async def _process_job(
         file_bytes, filename = await download_file(object_key)
     except Exception as exc:
         logger.error("Job %s — download failed: %s", job_id, exc)
-        await _mark_failed(db, redis, run_id, f"File download failed: {exc}")
+        await _mark_failed(db, run_id, f"File download failed: {exc}")
         return
 
     # ------------------------------------------------------------------
@@ -178,7 +178,7 @@ async def _process_job(
         logger.info("Job %s — extracted %d chars from '%s'", job_id, len(extracted_text), filename)
     except Exception as exc:
         logger.error("Job %s — text extraction failed: %s", job_id, exc)
-        await _mark_failed(db, redis, run_id, f"Text extraction failed: {exc}")
+        await _mark_failed(db, run_id, f"Text extraction failed: {exc}")
         return
 
     # ------------------------------------------------------------------
@@ -189,6 +189,8 @@ async def _process_job(
         "vertical":       vertical,
         "run_id":         run_id,
         "user_id":        user_id,
+        "skeptic_level":  payload.get("skeptic_level", "high"),
+        "focus_area":     payload.get("focus_area", "general"),
         "structured":     {},
         "assumptions":    [],
         "hard_questions": [],
@@ -207,7 +209,7 @@ async def _process_job(
             agent_num  = _NODE_TO_AGENT.get(node_name, 0)
             latency_ms = (final_state.get("latencies_ms") or {}).get(f"agent_{agent_num}", 0)
             await _publish_progress(
-                redis, run_id,
+                db, run_id,
                 {
                     "event":      "agent_complete",
                     "agent":      agent_num,
@@ -219,7 +221,7 @@ async def _process_job(
 
     except Exception as exc:
         logger.error("Job %s — pipeline failed: %s\n%s", job_id, exc, traceback.format_exc())
-        await _mark_failed(db, redis, run_id, f"Pipeline error: {exc}")
+        await _mark_failed(db, run_id, f"Pipeline error: {exc}")
         return
 
     # ------------------------------------------------------------------
@@ -229,6 +231,8 @@ async def _process_job(
         token_counts: dict[str, int] = final_state.get("token_counts") or {}
         latencies_ms: dict[str, int] = final_state.get("latencies_ms") or {}
         report_data:  dict[str, Any] = final_state.get("report") or {}
+        # Use the AI-detected vertical from the pipeline, fallback to original
+        detected_vertical: str = final_state.get("vertical") or vertical or "other"
 
         total_tokens     = sum(token_counts.values())
         input_tokens     = total_tokens // 2
@@ -248,10 +252,13 @@ async def _process_job(
             "_id": report_id,
             "run_id": run_id,
             "user_id": user_id,
-            "vertical": vertical,
+            "vertical": detected_vertical,
+            "detailed_analysis": report_data.get("detailed_analysis", ""),
             "assumption_map": report_data.get("assumption_map", []),
             "blind_spots": report_data.get("blind_spots", []),
+            "hard_questions": report_data.get("hard_questions", []),
             "sharpening": report_data.get("sharpening_prompts", []),
+            "status": "done",
             "raw_output": report_data,
             "created_at": now
         }
@@ -263,6 +270,7 @@ async def _process_job(
             {
                 "$set": {
                     "status": "done",
+                    "vertical": detected_vertical,  # Update with AI-detected value
                     "agent_1_ms": latencies_ms.get("agent_1"),
                     "agent_2_ms": latencies_ms.get("agent_2"),
                     "agent_3_ms": latencies_ms.get("agent_3"),
@@ -270,14 +278,14 @@ async def _process_job(
                     "total_ms": total_ms,
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
-                    "cost_usd": float(cost_usd), # MongoDB handles floats better than Decimal in some drivers
+                    "cost_usd": float(cost_usd),
                     "completed_at": now
                 }
             }
         )
 
         await _publish_progress(
-            redis, run_id,
+            db, run_id,
             {
                 "event":     "done",
                 "report_id": report_id,
@@ -291,7 +299,7 @@ async def _process_job(
 
     except Exception as exc:
         logger.error("Job %s — save failed: %s\n%s", job_id, exc, traceback.format_exc())
-        await _mark_failed(db, redis, run_id, f"Result save failed: {exc}")
+        await _mark_failed(db, run_id, f"Result save failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +310,7 @@ async def run_worker() -> None:
     """
     Main async worker loop.
 
-    Initialises all resources, polls Redis infinitely for jobs with BRPOP,
+    Initialises all resources, polls MongoDB infinitely for jobs with status 'queued',
     and dispatches each to _process_job(). Handles SIGTERM/SIGINT for
     graceful shutdown.
     """
@@ -312,13 +320,15 @@ async def run_worker() -> None:
     from motor.motor_asyncio import AsyncIOMotorClient
     client = AsyncIOMotorClient(os.environ["MONGODB_URI"])
     # Extract DB name from URI or use default 'pitchready'
-    db_name = client.get_database().name or "pitchready"
-    db = client[db_name]
+    try:
+        db = client.get_default_database()
+    except Exception:
+        db = client.get_database("pitchready")
 
-    redis = _get_redis()
-    verticals = _load_verticals()
+    # verticals = _load_verticals() # Verticals are loaded within process_job if needed or globally
+    # For now, we'll keep it simple
 
-    logger.info("PitchReady worker started (MongoDB). Verticals loaded: %s", list(verticals.keys()))
+    logger.info("PitchReady worker started (MongoDB-only).")
 
     # ------------------------------------------------------------------
     # Shutdown handling
@@ -338,42 +348,37 @@ async def run_worker() -> None:
     try:
         while not shutdown_event.is_set():
             try:
-                # Use RPOP (non-blocking) and wait manually since Upstash Redis (HTTP) doesn't support BRPOP
-                result = await redis.rpop(QUEUE_KEY)
-                if not result:
-                    await asyncio.sleep(2)
-                    continue
-            except Exception as redis_exc:
-                logger.error("Redis RPOP error: %s — retrying in 3s", redis_exc)
-                await asyncio.sleep(3)
-                continue
-
-            # Timeout — no jobs available; loop again
-            if result is None:
-                continue
-
-            # Upstash RPOP result format: value (JSON string or dict depending on client)
-            raw_job = result
-            try:
-                job_payload: dict[str, Any] = json.loads(raw_job)
-            except json.JSONDecodeError as exc:
-                logger.error("Malformed job payload (not JSON): %s — %s", raw_job, exc)
-                continue
-
-            # Process the job; all internal errors are caught and logged inside
-            try:
-                await _process_job(job_payload, db, redis)
-            except Exception as exc:
-                logger.error(
-                    "Unhandled exception in job %s: %s\n%s",
-                    job_payload.get("job_id", "?"),
-                    exc,
-                    traceback.format_exc(),
+                # Atomically find a queued job and mark it as running
+                run_doc = await db.analysis_runs.find_one_and_update(
+                    {"status": "queued"},
+                    {"$set": {"status": "running", "started_at": datetime.datetime.now(datetime.timezone.utc)}},
+                    sort=[("created_at", 1)],  # FIFO
+                    return_document=True
                 )
-                # Best-effort failure marking — run_id may be missing
-                run_id = job_payload.get("run_id", "")
-                if run_id:
-                    await _mark_failed(db, redis, run_id, f"Unhandled worker error: {exc}")
+
+                if not run_doc:
+                    await asyncio.sleep(POLL_INTERVAL)
+                    continue
+
+                # Build job payload from the run document
+                # Note: The object_key and vertical must be present in the run document
+                job_payload = {
+                    "job_id": str(uuid.uuid4()), # We generate a transient job_id
+                    "run_id": run_doc["_id"],
+                    "user_id": run_doc["user_id"],
+                    "object_key": run_doc["storage_object_key"],
+                    "vertical": run_doc["vertical"],
+                    "skeptic_level": run_doc.get("skeptic_level", "high"),
+                    "focus_area": run_doc.get("focus_area", "general"),
+                }
+
+                logger.info("Found job for run %s. Starting processing...", job_payload["run_id"])
+                await _process_job(job_payload, db)
+
+            except Exception as loop_exc:
+                logger.error("Worker loop error: %s — retrying in %ds", loop_exc, POLL_INTERVAL)
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
 
     finally:
         logger.info("Worker shutting down gracefully")

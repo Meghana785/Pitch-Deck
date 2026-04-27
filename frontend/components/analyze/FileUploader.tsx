@@ -72,17 +72,17 @@ export function FileUploader({ file, onFileSelect, disabled }: FileUploaderProps
 
     return (
         <div className="flex flex-col gap-3">
-            <h3 className="text-xs font-sans font-bold uppercase tracking-[0.2em] text-zinc-500">Document Upload</h3>
+            <h3 className="text-xs font-sans font-bold uppercase tracking-[0.2em] text-zinc-400">Pitch Deck Upload</h3>
             <div
                 onDragOver={onDragOver}
                 onDragLeave={onDragLeave}
                 onDrop={onDrop}
-                className={`relative flex flex-col items-center justify-center w-full h-56 border border-dashed rounded-luxury transition-all duration-300 ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
+                className={`relative flex flex-col items-center justify-center w-full h-56 border border-dashed rounded-sm transition-all duration-300 ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
                     } ${isDragging
                         ? 'border-brand-red bg-brand-red/5'
                         : file
                             ? 'border-brand-red/50 bg-brand-red/5'
-                            : 'border-zinc-700 hover:border-zinc-500 bg-brand-black'
+                            : 'border-zinc-300 dark:border-zinc-600 hover:border-brand-red bg-zinc-50 dark:bg-zinc-900/30'
                     }`}
             >
                 <input
@@ -95,21 +95,21 @@ export function FileUploader({ file, onFileSelect, disabled }: FileUploaderProps
 
                 {!file ? (
                     <div className="text-center px-6 pointer-events-none flex flex-col items-center">
-                        <div className="w-12 h-12 mb-4 border border-zinc-800 bg-zinc-900 rounded-luxury flex items-center justify-center transform rotate-45 group-hover:rotate-0 transition-transform duration-500">
-                            <div className="w-3 h-3 bg-zinc-600 rounded-sm transform -rotate-45 group-hover:bg-brand-red transition-colors duration-500" />
+                        <div className="w-12 h-12 mb-4 border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-sm flex items-center justify-center transform rotate-45 transition-transform duration-500">
+                            <div className="w-3 h-3 bg-zinc-300 dark:bg-zinc-500 rounded-sm transform -rotate-45 transition-colors duration-500" />
                         </div>
-                        <p className="text-sm text-white font-sans font-bold uppercase tracking-widest">Transmit File</p>
-                        <p className="text-xs text-zinc-500 font-mono mt-2">PDF/PPTX — MAX 20MB</p>
+                        <p className="text-sm text-zinc-900 dark:text-white font-sans font-bold uppercase tracking-widest">Upload Deck</p>
+                        <p className="text-xs text-zinc-400 dark:text-zinc-400 font-mono mt-2">PDF/PPTX — MAX 20MB</p>
                     </div>
                 ) : (
                     <div className="flex flex-col items-center gap-3 z-30">
-                        <div className="w-12 h-12 border border-brand-red/30 bg-brand-red/10 text-brand-red rounded-luxury flex items-center justify-center shadow-[0_0_15px_rgba(210,18,46,0.15)]">
+                        <div className="w-12 h-12 border border-brand-red/30 bg-brand-red/10 text-brand-red rounded-sm flex items-center justify-center shadow-lg dark:shadow-[0_0_15px_rgba(210,18,46,0.15)]">
                             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M5 13l4 4L19 7" />
                             </svg>
                         </div>
-                        <span className="text-sm font-sans font-bold text-white uppercase tracking-widest truncate max-w-[200px] sm:max-w-xs">{file.name}</span>
-                        <span className="text-[10px] font-mono text-zinc-500">{(file.size / 1024 / 1024).toFixed(2)} MB</span>
+                        <span className="text-sm font-sans font-bold text-zinc-900 dark:text-white uppercase tracking-widest truncate max-w-[200px] sm:max-w-xs">{file.name}</span>
+                        <span className="text-[10px] font-mono text-zinc-400">{(file.size / 1024 / 1024).toFixed(2)} MB</span>
                         <button
                             onClick={(e) => {
                                 e.preventDefault();
@@ -118,9 +118,9 @@ export function FileUploader({ file, onFileSelect, disabled }: FileUploaderProps
                                 setError(null);
                             }}
                             disabled={disabled}
-                            className="mt-3 text-[10px] uppercase font-sans font-bold tracking-widest text-zinc-500 hover:text-brand-red transition-colors border-b border-transparent hover:border-brand-red pb-0.5"
+                            className="mt-3 text-[10px] uppercase font-sans font-bold tracking-widest text-zinc-400 hover:text-brand-red transition-colors border-b border-transparent hover:border-brand-red pb-0.5"
                         >
-                            Detach File
+                            Remove
                         </button>
                     </div>
                 )}

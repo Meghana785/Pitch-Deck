@@ -110,3 +110,24 @@ def delete_object(object_key: str) -> None:
     bucket = os.environ.get("R2_BUCKET", "pitch-ready")
     client = get_r2_client()
     client.delete_object(Bucket=bucket, Key=object_key)
+
+
+def upload_file_to_r2(
+    file_bytes: bytes,
+    object_key: str,
+    content_type: str,
+) -> None:
+    """
+    Upload raw bytes directly to R2 from the backend server.
+
+    This avoids the need for presigned URLs from the browser, eliminating
+    all CORS issues with direct browser-to-R2 uploads.
+    """
+    bucket = os.environ.get("R2_BUCKET", "pitch-ready")
+    client = get_r2_client()
+    client.put_object(
+        Bucket=bucket,
+        Key=object_key,
+        Body=file_bytes,
+        ContentType=content_type,
+    )

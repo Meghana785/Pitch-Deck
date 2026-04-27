@@ -1,11 +1,10 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 
 export interface SharpeningAction {
-    action: string;
-    rationale: string;
-    priority: 'HIGH' | 'MED' | 'LOW';
+    label: string;
+    prompt: string;
 }
 
 interface SharpeningPromptsProps {
@@ -13,123 +12,60 @@ interface SharpeningPromptsProps {
     prompts: SharpeningAction[];
 }
 
-const PRIORITY_MAP = {
-    HIGH: 'bg-brand-red text-white border-brand-red font-bold',
-    MED: 'bg-zinc-800 text-amber-500 border-zinc-700 font-bold',
-    LOW: 'bg-zinc-900 text-zinc-500 border-zinc-800 font-bold',
-};
+export function SharpeningPrompts({ prompts }: SharpeningPromptsProps) {
+    if (!prompts || prompts.length === 0) return null;
 
-export function SharpeningPrompts({ reportId, prompts }: SharpeningPromptsProps) {
-    const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
-    const [mounted, setMounted] = useState(false);
-
-    // Load state from localStorage
-    useEffect(() => {
-        setMounted(true);
-        const saved = localStorage.getItem(`pitchready_report_${reportId}_actions`);
-        if (saved) {
-            try {
-                const parsed = JSON.parse(saved);
-                if (Array.isArray(parsed)) {
-                    setCheckedIds(new Set(parsed));
-                }
-            } catch (e) {
-                // Safe fail
-            }
-        }
-    }, [reportId]);
-
-    const toggleCheck = (idx: number) => {
-        const next = new Set(checkedIds);
-        if (next.has(idx)) {
-            next.delete(idx);
-        } else {
-            next.add(idx);
-        }
-        setCheckedIds(next);
-        localStorage.setItem(`pitchready_report_${reportId}_actions`, JSON.stringify(Array.from(next)));
+    const copyToClipboard = (text: string) => {
+        navigator.clipboard.writeText(text);
+        // We could add a toast here, but keeping it simple as per user request
     };
 
-    if (!prompts.length) {
-        return null;
-    }
-
-    // Prevent layout shift/hydration mismatch gracefully
-    if (!mounted) {
-        return <div className="min-h-[200px]" />;
-    }
-
-    const completedCount = checkedIds.size;
-    const isAllComplete = completedCount === prompts.length;
-
     return (
-        <section className="flex flex-col gap-10 w-full mt-8">
-            <div className="flex items-end gap-6 border-b-2 border-brand-gray pb-6">
-                <span className="text-7xl font-serif text-brand-red leading-none -mb-2">III.</span>
-                <div className="flex flex-col">
-                    <h2 className="text-3xl font-serif text-white tracking-widest uppercase mb-2">Sharpening Directives</h2>
-                    <p className="text-xs font-mono text-zinc-500 uppercase tracking-widest">Tactical adjustments required before your next interaction.</p>
-                </div>
+        <section className="flex flex-col gap-6">
+            <div className="flex items-center gap-3">
+                <div className="w-1 h-6 bg-brand-red" />
+                <h2 className="text-sm font-sans font-bold uppercase tracking-[0.2em] text-zinc-400 dark:text-zinc-500">
+                    Action Items
+                </h2>
             </div>
 
-            <div className="flex flex-col gap-4">
-                {prompts.map((item, idx) => {
-                    const isChecked = checkedIds.has(idx);
-                    const badgeStyle = PRIORITY_MAP[item.priority] || PRIORITY_MAP.LOW;
+            <div className="flex flex-col gap-8">
+                {prompts.map((item, idx) => (
+                    <div
+                        key={idx}
+                        className="glass-panel p-8 sm:p-10 flex flex-col gap-6 hover-lift group"
+                    >
+                        <div className="flex flex-col gap-1">
+                            <span className="text-[10px] font-sans font-bold text-zinc-400 dark:text-zinc-600 uppercase tracking-widest">
+                                Task {String(idx + 1).padStart(2, '0')}
+                            </span>
+                            <h3 className="text-xl font-serif text-zinc-900 dark:text-white group-hover:italic transition-all">
+                                {item.label}
+                            </h3>
+                        </div>
 
-                    return (
-                        <div
-                            key={idx}
-                            className={`flex items-start gap-6 p-6 sm:p-8 rounded-luxury border transition-all duration-300 ${isChecked
-                                ? 'bg-zinc-950/50 border-zinc-900 opacity-50'
-                                : 'bg-brand-black border-brand-gray hover:border-zinc-700'
-                                }`}
-                        >
+                        <div className="bg-zinc-50 dark:bg-black/40 p-6 rounded-sm border border-zinc-100 dark:border-white/5 relative group/prompt transition-colors duration-300">
+                            <p className="text-sm sm:text-base text-zinc-600 dark:text-zinc-400 font-mono leading-relaxed">
+                                {item.prompt}
+                            </p>
                             <button
-                                onClick={() => toggleCheck(idx)}
-                                className={`mt-1 flex-shrink-0 w-8 h-8 rounded-sm border flex items-center justify-center transition-colors ${isChecked
-                                    ? 'bg-white border-white text-black'
-                                    : 'bg-zinc-900 border-zinc-700 hover:border-brand-red text-transparent hover:bg-brand-red/10'
-                                    }`}
+                                onClick={() => copyToClipboard(item.prompt)}
+                                className="absolute top-4 right-4 p-2 bg-zinc-100 dark:bg-zinc-900 hover:bg-brand-red dark:hover:bg-brand-red text-zinc-400 dark:text-zinc-500 hover:text-white dark:hover:text-white transition-all rounded-sm opacity-0 group-hover/prompt:opacity-100"
+                                title="Copy to clipboard"
                             >
-                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                                 </svg>
                             </button>
-
-                            <div className="flex flex-col gap-2 flex-1">
-                                <div className="flex items-center gap-4 flex-wrap">
-                                    <span className={`px-3 py-1 text-[10px] font-sans uppercase tracking-[0.2em] rounded-luxury border shadow-sm ${badgeStyle}`}>
-                                        {item.priority}
-                                    </span>
-                                    <h4 className={`text-xl font-serif ${isChecked ? 'line-through text-zinc-600' : 'text-white'}`}>
-                                        {item.action}
-                                    </h4>
-                                </div>
-                                <p className={`text-sm font-sans mt-2 font-light leading-relaxed ${isChecked ? 'text-zinc-700' : 'text-zinc-400'}`}>
-                                    {item.rationale}
-                                </p>
-                            </div>
                         </div>
-                    );
-                })}
+                    </div>
+                ))}
             </div>
 
-            <div className="flex flex-col items-center justify-center p-8 bg-zinc-950 rounded-luxury border border-brand-gray gap-4 mt-6">
-                {isAllComplete ? (
-                    <div className="flex flex-col sm:flex-row items-center gap-4 text-brand-red">
-                        <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        <span className="font-sans font-bold text-xs uppercase tracking-widest text-center">
-                            All directives executed. Proceed with deck revision and re-run analysis protocol.
-                        </span>
-                    </div>
-                ) : (
-                    <span className="text-zinc-500 font-mono text-xs uppercase tracking-widest">
-                        <span className="text-white font-bold">{completedCount}</span> / {prompts.length} Directives Completed
-                    </span>
-                )}
+            <div className="p-6 bg-zinc-100/50 dark:bg-zinc-900/30 border border-zinc-200 dark:border-white/5 rounded-sm text-center transition-colors duration-300">
+                <p className="text-xs text-zinc-500 dark:text-zinc-500 font-sans tracking-wide">
+                    These suggested AI prompts help you address specific weaknesses in your pitch.
+                </p>
             </div>
         </section>
     );
